@@ -1,0 +1,6 @@
+*.env
+scratch/
+.DS_Store
+.idea/
+.ipynb_checkpoints/
+
