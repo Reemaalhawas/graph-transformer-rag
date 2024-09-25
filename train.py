@@ -3,18 +3,22 @@ import math
 import time
 
 import torch
+from torch_geometric.loader import DataLoader
+
+from stark_qa import load_qa
 from torch import Tensor
 from torch.nn.utils import clip_grad_norm_
+from torch.utils.data import Dataset
 from torch_geometric import seed_everything
-from torch_geometric.loader import DataLoader
 from torch_geometric.nn import GAT, GRetriever
 from torch_geometric.nn.nlp import LLM
 from tqdm import tqdm
 
+from STaRKQADataset import STaRKQADataset
+
 
 def get_loss(model, batch, model_save_name) -> Tensor:
     # This assumes batch contains all textualised data
-    # todo: retrieve here.
 
     forward_result = model(batch.question, batch.x, batch.edge_index, batch.batch,
                      batch.label, batch.edge_attr, batch.desc)
@@ -23,14 +27,10 @@ def get_loss(model, batch, model_save_name) -> Tensor:
 
 
 def inference_step(model, batch, model_save_name):
-    #todo: retrieve text data similar to get_loss
-
     forward_result = model.inference(batch.question, batch.x, batch.edge_index,
                             batch.batch, batch.edge_attr, batch.desc)
 
     return forward_result
-
-
 
 
 def save_params_dict(model, save_path):
@@ -49,8 +49,6 @@ def load_params_dict(model, save_path):
     state_dict = torch.load(save_path)
     model.load_state_dict(state_dict)
     return model
-
-
 
 
 def train(
@@ -76,14 +74,19 @@ def train(
         param_group['lr'] = lr
         return lr
 
-
-    # all pcst-subgraphs should be here, but not the text (text retrieved during forward)
-    # todo
-    train_dataset = Neo4jSTaRKPrime(split='train')
-    val_dataset = Neo4jSTaRKPrime(split='val')
-    test_dataset = Neo4jSTaRKPrime(split='test')
-
+    start_time = time.time()
+    qa_dataset = load_qa("prime")
+    qa_raw_train = qa_dataset.get_subset('train')
+    qa_raw_val = qa_dataset.get_subset('val')
+    qa_raw_test = qa_dataset.get_subset('test')
     seed_everything(42)
+
+    print("Loading stark-qa prime train dataset...")
+    train_dataset = STaRKQADataset("stark_qa", qa_raw_train, split="train")
+    print("Loading stark-qa prime val dataset...")
+    val_dataset = STaRKQADataset("stark_qa", qa_raw_val, split="val")
+    print("Loading stark-qa prime test dataset...")
+    test_dataset = STaRKQADataset("stark_qa", qa_raw_test, split="test")
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size,
                               drop_last=True, pin_memory=True, shuffle=True)
@@ -165,7 +168,7 @@ def train(
             best_epoch = epoch
             save_params_dict(model, f'{model_save_name}_best_val_loss_ckpt.pt')
     torch.cuda.empty_cache()
-    torch.cuda.reset_max_memory_allocated()
+    #torch.cuda.reset_max_memory_allocated()
 
     if checkpointing and best_epoch != num_epochs - 1:
         print("Loading best checkpoint...")
@@ -190,7 +193,7 @@ def train(
             eval_output.append(eval_data)
         progress_bar_test.update(1)
 
-    compute_metrics(eval_output)
+    #compute_metrics(eval_output)
     print(f"Total Training Time: {time.time() - start_time:2f}s")
     save_params_dict(model, f'{model_save_name}.pt')
     torch.save(eval_output, f'{model_save_name}_eval_outs.pt')
@@ -203,7 +206,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_gnn_layers', type=int, default=4)
     parser.add_argument('--lr', type=float, default=1e-5)
     parser.add_argument('--epochs', type=int, default=2)
-    parser.add_argument('--batch_size', type=int, default=8)
+    parser.add_argument('--batch_size', type=int, default=4)
     parser.add_argument('--eval_batch_size', type=int, default=16)
     parser.add_argument('--checkpointing', action='store_true')
     parser.add_argument('--tiny_llama', action='store_true')
