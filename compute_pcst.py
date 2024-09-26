@@ -83,20 +83,15 @@ def compute_pcst(
     src = [mapping[i] for i in edge_index[0].tolist()]
     dst = [mapping[i] for i in edge_index[1].tolist()]
 
-    ## TODO retrieve node, edge-embedding and text again.
-
     data = Data(
-        #x=skb_data.x[selected_nodes],
-        x=torch.randn(len(selected_nodes), 1024),
         edge_index=torch.tensor([src, dst]),
-        #edge_attr=skb_data.edge_attr[selected_edges],
     )
 
-    print(f"Result parsed in {time.time() - t} seconds.")
-    print("PCST computed successfully!")
-    print(f"top_node_ids: {top_node_ids}")
-    print(f"top_edge_ids: {top_edge_ids}")
-    print(f"Selected nodes: {selected_nodes}")
-    print(f"PCST is: {data.edge_index}")
+    # print(f"Result parsed in {time.time() - t} seconds.")
+    # print("PCST computed successfully!")
+    # print(f"top_node_ids: {top_node_ids}")
+    # print(f"top_edge_ids: {top_edge_ids}")
+    # print(f"Selected nodes: {selected_nodes}")
+    # print(f"PCST is: {data.edge_index}")
 
-    return data
+    return data, mapping, selected_nodes, edge_index

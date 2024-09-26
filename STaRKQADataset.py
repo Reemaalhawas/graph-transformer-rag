@@ -1,6 +1,6 @@
 import os
 import time
-from typing import List
+from typing import List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -48,14 +48,13 @@ class STaRKQADataset(InMemoryDataset):
 
         retrieval_data = []
 
-        dataframe = self.raw_dataset.data.loc[self.raw_dataset.indices].head(5)
+        dataframe = self.raw_dataset.data.loc[self.raw_dataset.indices]
         skipped_queries = 0
-        for index, row in dataframe.iterrows():
+        for index, qa_row in dataframe.iterrows():
             t = time.time()
             print(f"Retrieving and constructing base subgraph for row {index}...")
-            prompt = row[1]
+            prompt = qa_row[1]
             with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
-                print(f"Retrieving relevant nodes and edges for prompt...")
                 topk_node_ids = self.get_nodes_by_vector_search(prompt, driver, OPENAI_API_KEY)
                 subgraph_rels = self.get_subgraph_rels(topk_node_ids, driver)
                 if len(subgraph_rels) < 1:
@@ -77,27 +76,47 @@ class STaRKQADataset(InMemoryDataset):
             # Some topk_node_ids may not be in subgraph_rels. Drop them for now.
             mapped_topk_node_ids = [id_map[node] for node in topk_node_ids if node in id_map.keys()]
 
-            print("Computing PCST...")
-            pcst = compute_pcst(pcst_base_graph_topology, mapped_topk_node_ids, topk_edge_ids)
+            pcst, inner_id_mapping, selected_nodes, selected_edges = compute_pcst(pcst_base_graph_topology, mapped_topk_node_ids, topk_edge_ids)
+            print(f"PCST computed in {time.time() - t} seconds.")
+            print("Enriched PCST with embeddings and textual description.")
+            t = time.time()
 
-            # Retrive textual node and edge data
+            # Retrieve node embedding, label and textual graph description
             with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
-                textual_nodes = self.get_textual_nodes(unique_nodes, driver)
+                reverse_id_map = {v: k for k, v in id_map.items()}
+                pcst_nodes_original_ids = [reverse_id_map[intermediate_id] for intermediate_id in selected_nodes]
 
+                textual_nodes_df = self.get_textual_nodes(pcst_nodes_original_ids, driver)
+
+                node_embedding = torch.tensor(textual_nodes_df['textEmbedding'].tolist())
+
+                textual_nodes_df.description.fillna("")
+                textual_nodes_df['node_attr'] = textual_nodes_df.apply(lambda row: f"name: {row['name']}, description: {row['description']}", axis=1)
+                textual_nodes_df.rename(columns={'nodeId': 'node_id'}, inplace=True)
+                nodes_desc = textual_nodes_df.drop(['name', 'description', 'textEmbedding'], axis=1).to_csv(index=False)
+
+                original_edges = [(reverse_id_map[src.item()], reverse_id_map[tgt.item()]) for src, tgt in selected_edges.t()]
+                textual_edges_df = self.get_textual_edges(original_edges, driver)
+                edges_desc = textual_edges_df.to_csv(index=False)
+
+                desc = nodes_desc + '\n' + edges_desc
+
+                answer_ids = eval(qa_row[2])
+                answers = self.get_textual_nodes(answer_ids, driver)['name'].tolist()
 
             enriched_data = Data(
-                x=pcst.x,
+                x=node_embedding,
                 edge_index=pcst.edge_index,
-                edge_attr=None,
+                edge_attr=None,  # add edge_attr if needed
                 question=f"Question: {prompt}\nAnswer: ",
-                label="Answer",
-                desc="Description",
+                label=('|').join(answers).lower(),
+                desc=desc,
             )
 
             retrieval_data.append(enriched_data)
-            print(f"Finished PCST for row {index} in {time.time() - t} seconds.")
-            print(f"Skipped {skipped_queries} queries due to insufficient subgraph data.")
+            print(f"Finished enriched PCST for row {index} in {time.time() - t} seconds.")
 
+        print(f"Skipped {skipped_queries} queries due to insufficient subgraph data.")
         self.save(retrieval_data, self.processed_paths[0])
 
 
@@ -173,11 +192,21 @@ class STaRKQADataset(InMemoryDataset):
             embeddings.extend(self.embedding_model.embed_documents(docs))
         return embeddings
 
-    def get_textual_nodes(self, node_ids: List, driver: Driver) -> List:
+
+    def get_textual_nodes(self, node_ids: List, driver: Driver) -> DataFrame:
         res = driver.execute_query("""
         UNWIND $nodeIds AS nodeId
         MATCH(node:_Entity_ {nodeId:nodeId})
-        RETURN node.nodeId AS nodeId, node.name AS name, node.description AS description
+        RETURN node.nodeId AS nodeId, node.name AS name, node.details AS description, node.textEmbedding AS textEmbedding
         """,
                                    parameters_={"nodeIds": node_ids})
+        return pd.DataFrame([rec.data() for rec in res.records])
+
+    def get_textual_edges(self, node_pairs: List[Tuple[int, int]], driver: Driver) -> DataFrame:
+        res = driver.execute_query("""
+        UNWIND $node_pairs AS pair
+        MATCH(src:_Entity_ {nodeId:pair[0]})-[e]->(tgt:_Entity_ {nodeId:pair[1]})
+        RETURN src.nodeId AS src, type(e) AS edge_attr, tgt.nodeId AS dst
+        """,
+                                   parameters_={"node_pairs": node_pairs})
         return pd.DataFrame([rec.data() for rec in res.records])

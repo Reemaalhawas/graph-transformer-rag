@@ -82,7 +82,9 @@ def train(
     seed_everything(42)
 
     print("Loading stark-qa prime train dataset...")
+    t = time.time()
     train_dataset = STaRKQADataset("stark_qa", qa_raw_train, split="train")
+    print(f'Finished loading train dataset in {time.time() - t} seconds.')
     print("Loading stark-qa prime val dataset...")
     val_dataset = STaRKQADataset("stark_qa", qa_raw_val, split="val")
     print("Loading stark-qa prime test dataset...")
@@ -96,9 +98,9 @@ def train(
                              drop_last=False, pin_memory=True, shuffle=False)
 
     gnn = GAT(
-        in_channels=1024,
+        in_channels=1536,
         hidden_channels=hidden_channels,
-        out_channels=1024,
+        out_channels=1536,
         num_layers=4,
         heads=4,
     )
@@ -202,7 +204,7 @@ def train(
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--gnn_hidden_channels', type=int, default=1024)
+    parser.add_argument('--gnn_hidden_channels', type=int, default=1536)
     parser.add_argument('--num_gnn_layers', type=int, default=4)
     parser.add_argument('--lr', type=float, default=1e-5)
     parser.add_argument('--epochs', type=int, default=2)
