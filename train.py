@@ -3,6 +3,7 @@ import math
 import time
 
 import torch
+from dotenv import load_dotenv
 from torch_geometric.loader import DataLoader
 
 from stark_qa import load_qa
@@ -83,12 +84,12 @@ def train(
 
     print("Loading stark-qa prime train dataset...")
     t = time.time()
-    train_dataset = STaRKQADataset("stark_qa", qa_raw_train, split="train")
+    train_dataset = STaRKQADataset("stark_qa_v0", qa_raw_train, split="train")
     print(f'Finished loading train dataset in {time.time() - t} seconds.')
     print("Loading stark-qa prime val dataset...")
-    val_dataset = STaRKQADataset("stark_qa", qa_raw_val, split="val")
+    val_dataset = STaRKQADataset("stark_qa_v0", qa_raw_val, split="val")
     print("Loading stark-qa prime test dataset...")
-    test_dataset = STaRKQADataset("stark_qa", qa_raw_test, split="test")
+    test_dataset = STaRKQADataset("stark_qa_v0", qa_raw_test, split="test")
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size,
                               drop_last=True, pin_memory=True, shuffle=True)
@@ -213,6 +214,7 @@ if __name__ == '__main__':
     parser.add_argument('--checkpointing', action='store_true')
     parser.add_argument('--tiny_llama', action='store_true')
     args = parser.parse_args()
+    load_dotenv('db.env', override=True)
 
     start_time = time.time()
     train(

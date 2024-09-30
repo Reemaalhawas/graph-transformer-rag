@@ -1,6 +1,9 @@
 # Neo4j GNN LLM Example
 
 
+# Installing Neo4j GenAI plugin
+Copy over from plugins to products according to Neo4j guide.
+
 
 # Installing LlamaTokenizer that's required by PyG GRetriever
 

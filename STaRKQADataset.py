@@ -27,8 +27,11 @@ class STaRKQADataset(InMemoryDataset):
     ) -> None:
         self.split = split
         self.raw_dataset = raw_dataset
-        self.embedding_model = OpenAIEmbeddings(model="text-embedding-ada-002")
-        self.embedding_dimension = 1536
+        #self.embedding_model = OpenAIEmbeddings(model="text-embedding-ada-002")
+        #embedding_dimension is fixed as 1536
+        # load from parent directory of this file
+        self.reltype_embedding_dict = torch.load(os.path.join(os.path.dirname(__file__), 'data-loading/emb/prime/text-embedding-ada-002/doc/reltype_emb_dict.pt'))
+        self.query_embedding_dict = torch.load(os.path.join(os.path.dirname(__file__), 'data-loading/emb/prime/text-embedding-ada-002/query/query_emb_dict.pt'))
 
         super().__init__(root, force_reload=force_reload)
 
@@ -53,6 +56,7 @@ class STaRKQADataset(InMemoryDataset):
         for index, qa_row in dataframe.iterrows():
             t = time.time()
             print(f"Retrieving and constructing base subgraph for row {index}...")
+            print(f"Current time is: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
             prompt = qa_row[1]
             with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
                 topk_node_ids = self.get_nodes_by_vector_search(prompt, driver, OPENAI_API_KEY)
@@ -61,8 +65,8 @@ class STaRKQADataset(InMemoryDataset):
                     # topk_node_ids can't form a small connected graph, skip this query
                     skipped_queries += 1
                     continue
-                subgraph_rels['textEmbedding'] = self._embed(subgraph_rels['text'])
-                topk_edge_ids = self.get_edges_by_vector_search(prompt, subgraph_rels)
+                subgraph_rels['textEmbedding'] = self._embed(subgraph_rels['relType'])
+                topk_edge_ids = self.get_edges_by_vector_search(qa_row[0], subgraph_rels)
 
             # process ids to consecutive tensor
             src = subgraph_rels['src'].values
@@ -163,20 +167,21 @@ class STaRKQADataset(InMemoryDataset):
         RETURN
         m.nodeId AS src,
         n.nodeId AS tgt,
-        n.name + ' - ' + type(r) +  ' -> ' + m.name AS text
+        type(r) AS relType
         """,
                                    parameters_={"nodeIds": node_ids})
         return pd.DataFrame([rec.data() for rec in res.records])
 
-    def get_edges_by_vector_search(self, prompt: str, subgraph_rels: DataFrame) -> np.ndarray:
+    def get_edges_by_vector_search(self, qa_row_id: int, subgraph_rels: DataFrame) -> np.ndarray:
         """
-        Given a prompt, encode it with OpenAI's API and search for similar edges in the SKB graph in Neo4j
+        Given a prompt find the most similar edges in the subgraph
 
         :param driver:
         :return: A list of 4 edges (node pairs) that are most similar to the prompt
         """
-        prompt_emb = self.embedding_model.embed_query(prompt)
-        sims = cosine_similarity([prompt_emb], np.vstack(subgraph_rels["textEmbedding"].values))
+
+        prompt_emb = self.query_embedding_dict[qa_row_id]
+        sims = cosine_similarity(prompt_emb, np.vstack(subgraph_rels["textEmbedding"].values))
         k = min(4, len(subgraph_rels))
         indices = np.argpartition(sims[0], -k)[-k:]
 
@@ -186,11 +191,19 @@ class STaRKQADataset(InMemoryDataset):
         n = max(1, n)
         return [xs[i:i + n] for i in range(0, len(xs), n)]
 
-    def _embed(self, doc_list, chunk_size=500):
-        embeddings = []
-        for docs in self._chunks(doc_list, chunk_size):
-            embeddings.extend(self.embedding_model.embed_documents(docs))
-        return embeddings
+    # def _embed(self, doc_list, chunk_size=500):
+    #     embeddings = []
+    #     for docs in self._chunks(doc_list, chunk_size):
+    #         try:
+    #             embeddings.extend(self.embedding_model.embed_documents(docs))
+    #         except Exception as e:
+    #             print(f"Error while embedding the documents: {e}")
+    #             exit()
+    #         time.sleep(1)
+    #     return embeddings
+
+    def _embed(self, reltype_list: List[str]):
+        return [self.reltype_embedding_dict[reltype] for reltype in reltype_list]
 
 
     def get_textual_nodes(self, node_ids: List, driver: Driver) -> DataFrame:
