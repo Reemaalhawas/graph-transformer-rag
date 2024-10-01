@@ -87,11 +87,4 @@ def compute_pcst(
         edge_index=torch.tensor([src, dst]),
     )
 
-    # print(f"Result parsed in {time.time() - t} seconds.")
-    # print("PCST computed successfully!")
-    # print(f"top_node_ids: {top_node_ids}")
-    # print(f"top_edge_ids: {top_edge_ids}")
-    # print(f"Selected nodes: {selected_nodes}")
-    # print(f"PCST is: {data.edge_index}")
-
     return data, mapping, selected_nodes, edge_index

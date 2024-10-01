@@ -1,7 +1,9 @@
 import argparse
 import math
+import re
 import time
 
+import pandas as pd
 import torch
 from dotenv import load_dotenv
 from torch_geometric.loader import DataLoader
@@ -9,7 +11,6 @@ from torch_geometric.loader import DataLoader
 from stark_qa import load_qa
 from torch import Tensor
 from torch.nn.utils import clip_grad_norm_
-from torch.utils.data import Dataset
 from torch_geometric import seed_everything
 from torch_geometric.nn import GAT, GRetriever
 from torch_geometric.nn.nlp import LLM
@@ -17,21 +18,58 @@ from tqdm import tqdm
 
 from STaRKQADataset import STaRKQADataset
 
+def compute_metrics(eval_output):
+    df = pd.concat([pd.DataFrame(d) for d in eval_output])
+    all_hit = []
+    all_precision = []
+    all_recall = []
+    all_f1 = []
+
+    for pred, label in zip(df.pred.tolist(), df.label.tolist()):
+        try:
+            pred = pred.split('[/s]')[0].strip().split('|')
+            hit = re.findall(pred[0], label)
+            all_hit.append(len(hit) > 0)
+
+            label = label.split('|')
+            matches = set(pred).intersection(set(label))
+            precision = len(matches) / len(set(label))
+            recall = len(matches) / len(set(pred))
+            if recall + precision == 0:
+                f1 = 0
+            else:
+                f1 = 2 * precision * recall / (precision + recall)
+
+            all_precision.append(precision)
+            all_recall.append(recall)
+            all_f1.append(f1)
+
+        except Exception as e:
+            print(f'Label: {label}')
+            print(f'Pred: {pred}')
+            print(f'Exception: {e}')
+            print('------------------')
+
+    hit = sum(all_hit) / len(all_hit)
+    precision = sum(all_precision) / len(all_precision)
+    recall = sum(all_recall) / len(all_recall)
+    f1 = sum(all_f1) / len(all_f1)
+
+    print(f'Hit: {hit:.4f}')
+    print(f'Precision: {precision:.4f}')
+    print(f'Recall: {recall:.4f}')
+    print(f'F1: {f1:.4f}')
+
 
 def get_loss(model, batch, model_save_name) -> Tensor:
-    # This assumes batch contains all textualised data
-
-    forward_result = model(batch.question, batch.x, batch.edge_index, batch.batch,
+    return model(batch.question, batch.x, batch.edge_index, batch.batch,
                      batch.label, batch.edge_attr, batch.desc)
 
-    return forward_result
 
 
 def inference_step(model, batch, model_save_name):
-    forward_result = model.inference(batch.question, batch.x, batch.edge_index,
+    return model.inference(batch.question, batch.x, batch.edge_index,
                             batch.batch, batch.edge_attr, batch.desc)
-
-    return forward_result
 
 
 def save_params_dict(model, save_path):
@@ -84,12 +122,15 @@ def train(
 
     print("Loading stark-qa prime train dataset...")
     t = time.time()
-    train_dataset = STaRKQADataset("stark_qa_v0", qa_raw_train, split="train")
+
+    dataset_version = "v0"
+
+    train_dataset = STaRKQADataset(f"stark_qa_{dataset_version}", qa_raw_train, split="train")
     print(f'Finished loading train dataset in {time.time() - t} seconds.')
     print("Loading stark-qa prime val dataset...")
-    val_dataset = STaRKQADataset("stark_qa_v0", qa_raw_val, split="val")
+    val_dataset = STaRKQADataset(f"stark_qa_{dataset_version}", qa_raw_val, split="val")
     print("Loading stark-qa prime test dataset...")
-    test_dataset = STaRKQADataset("stark_qa_v0", qa_raw_test, split="test")
+    test_dataset = STaRKQADataset(f"stark_qa_{dataset_version}", qa_raw_test, split="test")
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size,
                               drop_last=True, pin_memory=True, shuffle=True)
@@ -102,7 +143,7 @@ def train(
         in_channels=1536,
         hidden_channels=hidden_channels,
         out_channels=1536,
-        num_layers=4,
+        num_layers=num_gnn_layers,
         heads=4,
     )
 
@@ -111,7 +152,7 @@ def train(
         num_params=1,
     )
     model = GRetriever(llm=llm, gnn=gnn, mlp_out_channels=2048)
-
+    print(f"Model device is: {llm.device}")
 
     model_save_name = 'gnn_llm'
     params = [p for _, p in model.named_parameters() if p.requires_grad]
@@ -169,15 +210,15 @@ def train(
             print("Checkpointing best model...")
             best_val_loss = val_loss
             best_epoch = epoch
-            save_params_dict(model, f'{model_save_name}_best_val_loss_ckpt.pt')
+            save_params_dict(model, f'stark_qa_{dataset_version}/models/{dataset_version}_{model_save_name}_best_val_loss_ckpt.pt')
     torch.cuda.empty_cache()
-    #torch.cuda.reset_max_memory_allocated()
+    torch.cuda.reset_max_memory_allocated()
 
     if checkpointing and best_epoch != num_epochs - 1:
         print("Loading best checkpoint...")
         model = load_params_dict(
             model,
-            f'{model_save_name}_best_val_loss_ckpt.pt',
+            f'stark_qa_{dataset_version}/models/{dataset_version}_{model_save_name}_best_val_loss_ckpt.pt',
         )
 
     model.eval()
@@ -196,10 +237,10 @@ def train(
             eval_output.append(eval_data)
         progress_bar_test.update(1)
 
-    #compute_metrics(eval_output)
+    compute_metrics(eval_output)
     print(f"Total Training Time: {time.time() - start_time:2f}s")
-    save_params_dict(model, f'{model_save_name}.pt')
-    torch.save(eval_output, f'{model_save_name}_eval_outs.pt')
+    save_params_dict(model, f'stark_qa_{dataset_version}/models/{dataset_version}_{model_save_name}.pt')
+    torch.save(eval_output, f'stark_qa_{dataset_version}/models/{dataset_version}_{model_save_name}_eval_outs.pt')
 
 
 
@@ -220,7 +261,7 @@ if __name__ == '__main__':
     train(
         args.epochs,
         args.gnn_hidden_channels,
-        4,
+        args.num_gnn_layers,
         args.batch_size,
         args.eval_batch_size,
         args.lr,
