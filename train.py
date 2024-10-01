@@ -1,5 +1,6 @@
 import argparse
 import math
+import os
 import re
 import time
 
@@ -131,6 +132,7 @@ def train(
     val_dataset = STaRKQADataset(f"stark_qa_{dataset_version}", qa_raw_val, split="val")
     print("Loading stark-qa prime test dataset...")
     test_dataset = STaRKQADataset(f"stark_qa_{dataset_version}", qa_raw_test, split="test")
+    os.makedirs(f'stark_qa_{dataset_version}/models', exist_ok=True)
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size,
                               drop_last=True, pin_memory=True, shuffle=True)
