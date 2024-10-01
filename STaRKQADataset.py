@@ -47,7 +47,6 @@ class STaRKQADataset(InMemoryDataset):
         NEO4J_URI = os.getenv('NEO4J_URI')
         NEO4J_USERNAME = os.getenv('NEO4J_USERNAME')
         NEO4J_PASSWORD = os.getenv('NEO4J_PASSWORD')
-        OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
 
         retrieval_data = []
 
@@ -59,7 +58,8 @@ class STaRKQADataset(InMemoryDataset):
             print(f"Current time is: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())}")
             prompt = qa_row[1]
             with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
-                topk_node_ids = self.get_nodes_by_vector_search(prompt, driver, OPENAI_API_KEY)
+                query_emb = self.query_embedding_dict[qa_row[0]].numpy()[0]
+                topk_node_ids = self.get_nodes_by_vector_search(query_emb, driver)
                 subgraph_rels = self.get_subgraph_rels(topk_node_ids, driver)
                 if len(subgraph_rels) < 1:
                     # topk_node_ids can't form a small connected graph, skip this query
@@ -124,7 +124,7 @@ class STaRKQADataset(InMemoryDataset):
         self.save(retrieval_data, self.processed_paths[0])
 
 
-    def get_nodes_by_vector_search(self, prompt: str, driver: Driver, OPENAI_API_KEY: str) -> List:
+    def get_nodes_by_vector_search(self, query_embedding: np.ndarray, driver: Driver) -> List:
         """
         Given a prompt, encode it with OpenAI's API and search for similar nodes in the SKB graph in Neo4j
 
@@ -132,18 +132,13 @@ class STaRKQADataset(InMemoryDataset):
         :return: A list of 4 node-ids that are most similar to the prompt
         """
         res = driver.execute_query("""
-        WITH genai.vector.encode(
-          $searchPrompt,
-          "OpenAI",
-          {token:$token}) AS queryVector
-        CALL db.index.vector.queryNodes($index, $k, queryVector) YIELD node
+        CALL db.index.vector.queryNodes($index, $k, $query_embedding) YIELD node
         RETURN node.nodeId AS nodeId
         """,
                                    parameters_={
-                                       "searchPrompt": prompt,
-                                       "token": OPENAI_API_KEY,
                                        "index": "text_embeddings",
-                                       "k": 4})
+                                       "k": 4,
+                                       "query_embedding": query_embedding})
         return [rec.data()['nodeId'] for rec in res.records]
 
     def get_subgraph_rels(self, node_ids: List, driver: Driver):
