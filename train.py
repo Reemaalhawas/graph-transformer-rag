@@ -18,6 +18,7 @@ from torch_geometric.nn.nlp import LLM
 from tqdm import tqdm
 
 from STaRKQADataset import STaRKQADataset
+from STaRKQAVectorSearchDataset import STaRKQAVectorSearchDataset
 
 def compute_metrics(eval_output):
     df = pd.concat([pd.DataFrame(d) for d in eval_output])
@@ -63,15 +64,19 @@ def compute_metrics(eval_output):
 
 
 def get_loss(model, batch, model_save_name) -> Tensor:
-    return model(batch.question, batch.x, batch.edge_index, batch.batch,
+    if model_save_name == 'llm':
+        return model(batch.question, batch.label, batch.desc)
+    else:
+        return model(batch.question, batch.x, batch.edge_index, batch.batch,
                      batch.label, batch.edge_attr, batch.desc)
 
 
-
 def inference_step(model, batch, model_save_name):
-    return model.inference(batch.question, batch.x, batch.edge_index,
-                            batch.batch, batch.edge_attr, batch.desc)
-
+    if model_save_name == 'llm':
+        return model.inference(batch.question, batch.desc)
+    else:
+        return model.inference(batch.question, batch.x, batch.edge_index,
+                               batch.batch, batch.edge_attr, batch.desc)
 
 def save_params_dict(model, save_path):
     state_dict = model.state_dict()
@@ -126,13 +131,29 @@ def train(
 
     dataset_version = "v0"
 
-    train_dataset = STaRKQADataset(f"stark_qa_{dataset_version}", qa_raw_train, split="train")
-    print(f'Finished loading train dataset in {time.time() - t} seconds.')
-    print("Loading stark-qa prime val dataset...")
-    val_dataset = STaRKQADataset(f"stark_qa_{dataset_version}", qa_raw_val, split="val")
-    print("Loading stark-qa prime test dataset...")
-    test_dataset = STaRKQADataset(f"stark_qa_{dataset_version}", qa_raw_test, split="test")
-    os.makedirs(f'stark_qa_{dataset_version}/models', exist_ok=True)
+    if num_gnn_layers == 0:
+        model_save_name = 'llm'
+    else:
+        model_save_name = 'gnn-llm'
+
+    if model_save_name == 'llm':
+        root_path = f"stark_qa_vector_rag_{dataset_version}"
+        train_dataset = STaRKQAVectorSearchDataset(root_path, qa_raw_train, split="train")
+        print(f'Finished loading train dataset in {time.time() - t} seconds.')
+        print("Loading stark-qa prime val dataset...")
+        val_dataset = STaRKQAVectorSearchDataset(root_path, qa_raw_val, split="val")
+        print("Loading stark-qa prime test dataset...")
+        test_dataset = STaRKQAVectorSearchDataset(root_path, qa_raw_test, split="test")
+        os.makedirs(f'{root_path}/models', exist_ok=True)
+    else:
+        root_path = f"stark_qa_{dataset_version}"
+        train_dataset = STaRKQADataset(root_path, qa_raw_train, split="train")
+        print(f'Finished loading train dataset in {time.time() - t} seconds.')
+        print("Loading stark-qa prime val dataset...")
+        val_dataset = STaRKQADataset(root_path, qa_raw_val, split="val")
+        print("Loading stark-qa prime test dataset...")
+        test_dataset = STaRKQADataset(root_path, qa_raw_test, split="test")
+        os.makedirs(f'{root_path}/models', exist_ok=True)
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size,
                               drop_last=True, pin_memory=True, shuffle=True)
@@ -153,10 +174,14 @@ def train(
         model_name='TinyLlama/TinyLlama-1.1B-Chat-v0.1',
         num_params=1,
     )
-    model = GRetriever(llm=llm, gnn=gnn, mlp_out_channels=2048)
+
+    if model_save_name == 'llm':
+        model = llm
+    else:
+        model = GRetriever(llm=llm, gnn=gnn, mlp_out_channels=2048)
+
     print(f"Model device is: {llm.device}")
 
-    model_save_name = 'gnn_llm'
     params = [p for _, p in model.named_parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW([
         {
@@ -212,15 +237,15 @@ def train(
             print("Checkpointing best model...")
             best_val_loss = val_loss
             best_epoch = epoch
-            save_params_dict(model, f'stark_qa_{dataset_version}/models/{dataset_version}_{model_save_name}_best_val_loss_ckpt.pt')
-    torch.cuda.empty_cache()
-    torch.cuda.reset_max_memory_allocated()
+            save_params_dict(model, f'{root_path}/models/{dataset_version}_{model_save_name}_best_val_loss_ckpt.pt')
+    #torch.cuda.empty_cache()
+    #torch.cuda.reset_max_memory_allocated()
 
     if checkpointing and best_epoch != num_epochs - 1:
         print("Loading best checkpoint...")
         model = load_params_dict(
             model,
-            f'stark_qa_{dataset_version}/models/{dataset_version}_{model_save_name}_best_val_loss_ckpt.pt',
+            f'{root_path}/models/{dataset_version}_{model_save_name}_best_val_loss_ckpt.pt',
         )
 
     model.eval()
@@ -241,8 +266,8 @@ def train(
 
     compute_metrics(eval_output)
     print(f"Total Training Time: {time.time() - start_time:2f}s")
-    save_params_dict(model, f'stark_qa_{dataset_version}/models/{dataset_version}_{model_save_name}.pt')
-    torch.save(eval_output, f'stark_qa_{dataset_version}/models/{dataset_version}_{model_save_name}_eval_outs.pt')
+    save_params_dict(model, f'{root_path}/models/{dataset_version}_{model_save_name}.pt')
+    torch.save(eval_output, f'{root_path}/models/{dataset_version}_{model_save_name}_eval_outs.pt')
 
 
 
