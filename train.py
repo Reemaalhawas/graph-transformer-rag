@@ -23,10 +23,10 @@ from STaRKQAVectorSearchDataset import STaRKQAVectorSearchDataset
 def compute_metrics(eval_output):
     df = pd.concat([pd.DataFrame(d) for d in eval_output])
     all_hit = []
+    all_exact_hit = []
     all_precision = []
     all_recall = []
     all_f1 = []
-
     for pred, label in zip(df.pred.tolist(), df.label.tolist()):
         try:
             pred = pred.split('[/s]')[0].strip().split('|')
@@ -34,14 +34,16 @@ def compute_metrics(eval_output):
             all_hit.append(len(hit) > 0)
 
             label = label.split('|')
+            exact_hit = 1 * (pred[0] in label)
             matches = set(pred).intersection(set(label))
-            precision = len(matches) / len(set(label))
-            recall = len(matches) / len(set(pred))
+            precision = len(matches) / len(set(pred))
+            recall = len(matches) / len(set(label))
             if recall + precision == 0:
                 f1 = 0
             else:
                 f1 = 2 * precision * recall / (precision + recall)
 
+            all_exact_hit.append(exact_hit)
             all_precision.append(precision)
             all_recall.append(recall)
             all_f1.append(f1)
@@ -52,12 +54,15 @@ def compute_metrics(eval_output):
             print(f'Exception: {e}')
             print('------------------')
 
-    hit = sum(all_hit) / len(all_hit)
-    precision = sum(all_precision) / len(all_precision)
-    recall = sum(all_recall) / len(all_recall)
-    f1 = sum(all_f1) / len(all_f1)
+    dataset_len = len(df.label.tolist())
+    hit = sum(all_hit) / dataset_len
+    exact_hit = sum(all_exact_hit) / dataset_len
+    precision = sum(all_precision) / dataset_len
+    recall = sum(all_recall) / dataset_len
+    f1 = sum(all_f1) / dataset_len
 
     print(f'Hit: {hit:.4f}')
+    print(f'Exact hit: {exact_hit:.4f}')
     print(f'Precision: {precision:.4f}')
     print(f'Recall: {recall:.4f}')
     print(f'F1: {f1:.4f}')
