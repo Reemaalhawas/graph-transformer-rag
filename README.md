@@ -42,3 +42,16 @@ val_data.pt: 2120
 test_data.pt: 2633
 Total: 10536
 (Smaller than stark-qa 11,204 because some are dropped due to empty PCST graphs)
+
+
+# v1
+Epochs = 10, k_nodes = 10
+
+# v2
+Epochs = 10, k_nodes = 4, edge_embedding "nodeType relType nodeType".
+
+# v3
+Epochs = 10, k_nodes = 4, same triplet edge embedding. Base graph sampling = 1-hop neighbourhood.
+
+# v4
+Epochs = 10, k_nodes = 4, 2path query.

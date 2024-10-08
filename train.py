@@ -17,56 +17,10 @@ from torch_geometric.nn import GAT, GRetriever
 from torch_geometric.nn.nlp import LLM
 from tqdm import tqdm
 
+from compute_metrics import compute_metrics
+
 from STaRKQADataset import STaRKQADataset
 from STaRKQAVectorSearchDataset import STaRKQAVectorSearchDataset
-
-def compute_metrics(eval_output):
-    df = pd.concat([pd.DataFrame(d) for d in eval_output])
-    all_hit = []
-    all_exact_hit = []
-    all_precision = []
-    all_recall = []
-    all_f1 = []
-    for pred, label in zip(df.pred.tolist(), df.label.tolist()):
-        try:
-            pred = pred.split('[/s]')[0].strip().split('|')
-            hit = re.findall(pred[0], label)
-            all_hit.append(len(hit) > 0)
-
-            label = label.split('|')
-            exact_hit = 1 * (pred[0] in label)
-            matches = set(pred).intersection(set(label))
-            precision = len(matches) / len(set(pred))
-            recall = len(matches) / len(set(label))
-            if recall + precision == 0:
-                f1 = 0
-            else:
-                f1 = 2 * precision * recall / (precision + recall)
-
-            all_exact_hit.append(exact_hit)
-            all_precision.append(precision)
-            all_recall.append(recall)
-            all_f1.append(f1)
-
-        except Exception as e:
-            print(f'Label: {label}')
-            print(f'Pred: {pred}')
-            print(f'Exception: {e}')
-            print('------------------')
-
-    dataset_len = len(df.label.tolist())
-    hit = sum(all_hit) / dataset_len
-    exact_hit = sum(all_exact_hit) / dataset_len
-    precision = sum(all_precision) / dataset_len
-    recall = sum(all_recall) / dataset_len
-    f1 = sum(all_f1) / dataset_len
-
-    print(f'Hit: {hit:.4f}')
-    print(f'Exact hit: {exact_hit:.4f}')
-    print(f'Precision: {precision:.4f}')
-    print(f'Recall: {recall:.4f}')
-    print(f'F1: {f1:.4f}')
-
 
 def get_loss(model, batch, model_save_name) -> Tensor:
     if model_save_name == 'llm':
@@ -134,7 +88,7 @@ def train(
     print("Loading stark-qa prime train dataset...")
     t = time.time()
 
-    dataset_version = "v0"
+    dataset_version = "test"
 
     if num_gnn_layers == 0:
         model_save_name = 'llm'
@@ -152,12 +106,12 @@ def train(
         os.makedirs(f'{root_path}/models', exist_ok=True)
     else:
         root_path = f"stark_qa_{dataset_version}"
-        train_dataset = STaRKQADataset(root_path, qa_raw_train, split="train")
+        train_dataset = STaRKQADataset(root_path, qa_raw_train, split="train", dataset_version=dataset_version)
         print(f'Finished loading train dataset in {time.time() - t} seconds.')
         print("Loading stark-qa prime val dataset...")
-        val_dataset = STaRKQADataset(root_path, qa_raw_val, split="val")
+        val_dataset = STaRKQADataset(root_path, qa_raw_val, split="val", dataset_version=dataset_version)
         print("Loading stark-qa prime test dataset...")
-        test_dataset = STaRKQADataset(root_path, qa_raw_test, split="test")
+        test_dataset = STaRKQADataset(root_path, qa_raw_test, split="test", dataset_version=dataset_version)
         os.makedirs(f'{root_path}/models', exist_ok=True)
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size,
