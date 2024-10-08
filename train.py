@@ -134,6 +134,10 @@ def train(
         num_params=1,
     )
 
+    if args.freeze_llm:
+        for param in llm.parameters():
+            param.requires_grad = False
+
     if model_save_name == 'llm':
         model = llm
     else:
@@ -184,7 +188,6 @@ def train(
         print(epoch_str + f', Train Loss: {train_loss:4f}')
 
         val_loss = 0
-        eval_output = []
         model.eval()
         with torch.no_grad():
             for step, batch in enumerate(val_loader):
@@ -197,8 +200,10 @@ def train(
             best_val_loss = val_loss
             best_epoch = epoch
             save_params_dict(model, f'{root_path}/models/{dataset_version}_{model_save_name}_best_val_loss_ckpt.pt')
-    #torch.cuda.empty_cache()
-    #torch.cuda.reset_max_memory_allocated()
+
+    if llm.device != "cpu":
+        torch.cuda.empty_cache()
+        torch.cuda.reset_max_memory_allocated()
 
     if checkpointing and best_epoch != num_epochs - 1:
         print("Loading best checkpoint...")
@@ -240,6 +245,7 @@ if __name__ == '__main__':
     parser.add_argument('--eval_batch_size', type=int, default=16)
     parser.add_argument('--checkpointing', action='store_true')
     parser.add_argument('--tiny_llama', action='store_true')
+    parser.add_argument('--freeze_llm', type=bool, default=False)
     args = parser.parse_args()
     load_dotenv('db.env', override=True)
 

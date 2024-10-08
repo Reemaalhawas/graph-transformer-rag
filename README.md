@@ -12,8 +12,6 @@ installation page of its repo: https://github.com/google/sentencepiece#installat
 that match your environment. Please note that you may need to restart your runtime after installation.
 
 
-
-# v0
 In DB:
 - SKB graph with node embeddings from candidate_emb_dict.pt, downloaded from https://github.com/snap-stanford/stark
 In emb/prime/text-embedding-ada-002:
@@ -43,15 +41,22 @@ test_data.pt: 2633
 Total: 10536
 (Smaller than stark-qa 11,204 because some are dropped due to empty PCST graphs)
 
+# v0
+Epochs = 2, k_nodes = 4
 
 # v1
 Epochs = 10, k_nodes = 10
 
 # v2
-Epochs = 10, k_nodes = 4, edge_embedding "nodeType relType nodeType".
+Epochs = 10, k_nodes = 4
 
 # v3
-Epochs = 10, k_nodes = 4, same triplet edge embedding. Base graph sampling = 1-hop neighbourhood.
+Epochs = 10, k_nodes = 4, edge_embedding "nodeType relType nodeType".
 
 # v4
-Epochs = 10, k_nodes = 4, 2path query.
+Epochs = 10, k_nodes = 4, same triplet edge embedding. Base graph sampling = 1-hop neighbourhood.
+
+# v5
+Epochs = 10, k_nodes = 4, k_edges = 4,
+Given 4 most similar nodes and edges. Do 2-hop expansion for 4 k_nodes along edges of the top 4 types.
+Pass the resulting graph to GNN & LLM.
