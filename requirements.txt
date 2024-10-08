@@ -1,0 +1,8 @@
+stark-qa == 0.1.2
+neo4j == 5.24.0
+python-dotenv == 1.0.1
+pcst_fast == 1.0.10
+langchain-openai == 0.2.0
+sentencepiece == 0.2.0
+protobuf == 5.28.2
+#accelerate == 0.34.2 # for GPU support
