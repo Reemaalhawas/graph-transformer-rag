@@ -93,7 +93,10 @@ def train(
     if num_gnn_layers == 0:
         model_save_name = 'llm'
     else:
-        model_save_name = 'gnn-llm'
+        if args.freeze_llm:
+            model_save_name = 'gnn-frozen-llm'
+        else:
+            model_save_name = 'gnn-llm'
 
     if model_save_name == 'llm':
         root_path = f"stark_qa_vector_rag_{dataset_version}"
