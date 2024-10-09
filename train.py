@@ -132,10 +132,10 @@ def train(
         heads=4,
     )
 
-    llm = LLM(
-        model_name='TinyLlama/TinyLlama-1.1B-Chat-v0.1',
-        num_params=1,
-    )
+    if tiny_llama:
+        llm = LLM(model_name='TinyLlama/TinyLlama-1.1B-Chat-v0.1', num_params=1)
+    else:
+        llm = LLM(model_name='meta-llama/Llama-2-7b-chat-hf', num_params=7)
 
     if args.freeze_llm:
         for param in llm.parameters():
@@ -144,7 +144,10 @@ def train(
     if model_save_name == 'llm':
         model = llm
     else:
-        model = GRetriever(llm=llm, gnn=gnn, mlp_out_channels=2048)
+        if tiny_llama:
+            model = GRetriever(llm=llm, gnn=gnn, mlp_out_channels=2048)
+        else:
+            model = GRetriever(llm=llm, gnn=gnn)
 
     print(f"Model device is: {llm.device}")
 
