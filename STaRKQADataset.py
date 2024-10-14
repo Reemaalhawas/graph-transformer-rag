@@ -58,10 +58,26 @@ class STaRKQADataset(InMemoryDataset):
         dataframe = self.raw_dataset.data.loc[self.raw_dataset.indices]
         skipped_queries = 0
 
-        k_nodes = 4
-        k_edges = 4
-        base_graph_method = '1hop' #alt. 2path
-        edge_embedding_method = 'triplet' #alt. relation only
+
+        if self.dataset_version in ["v1"]:
+            k_nodes = 10
+        else:
+            k_nodes = 4
+
+        if self.dataset_version in ["v6", "v7"]:
+            k_edges = 4
+        else:
+            k_edges = 10
+
+        if self.dataset_version in ["v4", "v7", "v8"]:
+            base_graph_method = '1hop'
+        else:
+            base_graph_method = '2path'
+
+        if self.dataset_version in ["v3", "v4", "v6", "v7", "v8"]:
+            edge_embedding_method = 'triplet'
+        else:
+            edge_embedding_method = 'relation'
 
         correct_nodes = {}; topk_nodes = {}; subgraph_nodes = {}; pcst_nodes = {}
 
