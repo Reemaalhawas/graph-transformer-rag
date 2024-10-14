@@ -14,7 +14,7 @@ from torch.utils.data import Dataset
 from torch_geometric.data import Data, InMemoryDataset
 from tqdm import tqdm
 
-from compute_pcst import compute_pcst
+from compute_pcst import compute_pcst, assign_prizes_topk
 from compute_metrics import compute_intermediate_metrics
 
 
@@ -104,8 +104,10 @@ class STaRKQADataset(InMemoryDataset):
 
             # Some topk_node_ids may not be in subgraph_rels. Drop them for now.
             mapped_topk_node_ids = [id_map[node] for node in topk_node_ids if node in id_map.keys()]
+
+            node_prizes, edge_prizes = assign_prizes_topk(pcst_base_graph_topology, mapped_topk_node_ids, topk_edge_ids)
             pcst, inner_id_mapping, selected_nodes, selected_edges = compute_pcst(pcst_base_graph_topology,
-                                                                                  mapped_topk_node_ids, topk_edge_ids)
+                                                                                  node_prizes, edge_prizes)
             reverse_id_map = {v: k for k, v in id_map.items()}
             pcst_nodes_original_ids = [reverse_id_map[intermediate_id] for intermediate_id in selected_nodes]
             pcst_nodes[index] = pcst_nodes_original_ids
