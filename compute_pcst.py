@@ -24,6 +24,27 @@ def assign_prizes_topk(
 
     return n_prizes, e_prizes
 
+
+def assign_prizes_modified(
+    base_subgraph_data: Data,
+    top_node_ids: List,
+    top_edge_ids: np.ndarray,
+    second_edge_ids: np.ndarray
+) -> tuple[torch.tensor, torch.tensor]:
+    # Assign prizes to nodes based on their similarity to the question
+    interval = 4/len(top_node_ids)
+    n_prizes = torch.zeros(base_subgraph_data.num_nodes)
+    n_prizes[top_node_ids] = torch.arange(4, 0, -interval).float()
+
+    # Assign prizes to edges based on their similarity to the question
+    e_prizes = torch.zeros(base_subgraph_data.num_edges)
+    for _, top_edge_id in enumerate(top_edge_ids):
+        e_prizes[top_edge_id] = 0.8
+    for _, second_edge_id in enumerate(second_edge_ids):
+        e_prizes[second_edge_id] = 0.5
+
+    return n_prizes, e_prizes
+
 def compute_pcst(
     base_subgraph_data: Data,
     n_prizes: torch.tensor,
