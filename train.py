@@ -63,6 +63,7 @@ def train(
     eval_batch_size,
     lr,
     llama_version,
+    dataset_version,
     checkpointing=False,
 ):
     def adjust_learning_rate(param_group, LR, epoch):
@@ -87,8 +88,6 @@ def train(
 
     print("Loading stark-qa prime train dataset...")
     t = time.time()
-
-    dataset_version = "v8"
 
     if num_gnn_layers == 0:
         model_save_name = f'llm-{llama_version}'
@@ -253,7 +252,8 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=4)
     parser.add_argument('--eval_batch_size', type=int, default=16)
     parser.add_argument('--checkpointing', action='store_true')
-    parser.add_argument('--llama_version', type=str)
+    parser.add_argument('--llama_version', type=str, required=True)
+    parser.add_argument('--dataset_version', type=str, required=True)
     parser.add_argument('--freeze_llm', type=bool, default=False)
     args = parser.parse_args()
     load_dotenv('db.env', override=True)
@@ -267,6 +267,7 @@ if __name__ == '__main__':
         args.eval_batch_size,
         args.lr,
         llama_version=args.llama_version,
+        dataset_version=args.dataset_version,
         checkpointing=args.checkpointing,
     )
     print(f"Total Time: {time.time() - start_time:2f}s")

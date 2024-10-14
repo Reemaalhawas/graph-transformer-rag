@@ -55,7 +55,7 @@ class STaRKQADataset(InMemoryDataset):
 
         retrieval_data = []
 
-        dataframe = self.raw_dataset.data.loc[self.raw_dataset.indices].head(10)
+        dataframe = self.raw_dataset.data.loc[self.raw_dataset.indices]
         skipped_queries = 0
 
         k_nodes = 4
