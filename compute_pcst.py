@@ -6,22 +6,11 @@ import torch
 from torch import Tensor
 from torch_geometric.data import Data
 
-
-def compute_pcst(
+def assign_prizes_topk(
     base_subgraph_data: Data,
     top_node_ids: List,
-    top_edge_ids: List,
-    cost_e: float = 0.5,
-) -> Data:
-
-    from pcst_fast import pcst_fast
-
-    root = -1
-    num_clusters = 1
-    pruning = 'gw'
-    verbosity_level = 0
-
-    t = time.time()
+    top_edge_ids: np.ndarray,
+) -> tuple[torch.tensor, torch.tensor]:
     # Assign prizes to nodes based on their similarity to the question
     top_node_count = len(top_node_ids)
     n_prizes = torch.zeros(base_subgraph_data.num_nodes)
@@ -33,6 +22,23 @@ def compute_pcst(
     for i, top_edge_id in enumerate(top_edge_ids):
         e_prizes[top_edge_id] = top_edges_count - i
 
+    return n_prizes, e_prizes
+
+def compute_pcst(
+    base_subgraph_data: Data,
+    n_prizes: torch.tensor,
+    e_prizes: torch.tensor,
+    cost_e: float = 0.5,
+) -> Data:
+
+    from pcst_fast import pcst_fast
+
+    root = -1
+    num_clusters = 1
+    pruning = 'gw'
+    verbosity_level = 0
+
+    t = time.time()
     # Preparing data for pcst_fast
     costs = []
     edges = []
