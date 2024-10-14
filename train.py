@@ -62,8 +62,9 @@ def train(
     batch_size,
     eval_batch_size,
     lr,
+    llama_version,
+    dataset_version,
     checkpointing=False,
-    tiny_llama=False,
 ):
     def adjust_learning_rate(param_group, LR, epoch):
         # Decay the learning rate with half-cycle cosine after warmup
@@ -88,17 +89,15 @@ def train(
     print("Loading stark-qa prime train dataset...")
     t = time.time()
 
-    dataset_version = "test"
-
     if num_gnn_layers == 0:
-        model_save_name = 'llm'
+        model_save_name = f'llm-{llama_version}'
     else:
         if args.freeze_llm:
-            model_save_name = 'gnn-frozen-llm'
+            model_save_name = f'gnn-frozen-llm-{llama_version}'
         else:
-            model_save_name = 'gnn-llm'
+            model_save_name = f'gnn-llm-{llama_version}'
 
-    if model_save_name == 'llm':
+    if model_save_name == f'llm-{llama_version}':
         root_path = f"stark_qa_vector_rag_{dataset_version}"
         train_dataset = STaRKQAVectorSearchDataset(root_path, qa_raw_train, split="train")
         print(f'Finished loading train dataset in {time.time() - t} seconds.')
@@ -132,19 +131,22 @@ def train(
         heads=4,
     )
 
-    if tiny_llama:
+    if llama_version == 'tiny_llama':
         llm = LLM(model_name='TinyLlama/TinyLlama-1.1B-Chat-v0.1', num_params=1)
-    else:
+    elif llama_version == 'llama2-7b':
         llm = LLM(model_name='meta-llama/Llama-2-7b-chat-hf', num_params=7)
+    elif llama_version == 'llama3.1-8b':
+        llm = LLM(model_name='meta-llama/Llama-3.1-8B-Instruct', num_params=8)
+
 
     if args.freeze_llm:
         for param in llm.parameters():
             param.requires_grad = False
 
-    if model_save_name == 'llm':
+    if model_save_name == f'llm-{llama_version}':
         model = llm
     else:
-        if tiny_llama:
+        if llama_version == 'tiny_llama':
             model = GRetriever(llm=llm, gnn=gnn, mlp_out_channels=2048)
         else:
             model = GRetriever(llm=llm, gnn=gnn)
@@ -250,7 +252,8 @@ if __name__ == '__main__':
     parser.add_argument('--batch_size', type=int, default=4)
     parser.add_argument('--eval_batch_size', type=int, default=16)
     parser.add_argument('--checkpointing', action='store_true')
-    parser.add_argument('--tiny_llama', action='store_true')
+    parser.add_argument('--llama_version', type=str, required=True)
+    parser.add_argument('--dataset_version', type=str, required=True)
     parser.add_argument('--freeze_llm', type=bool, default=False)
     args = parser.parse_args()
     load_dotenv('db.env', override=True)
@@ -263,7 +266,8 @@ if __name__ == '__main__':
         args.batch_size,
         args.eval_batch_size,
         args.lr,
+        llama_version=args.llama_version,
+        dataset_version=args.dataset_version,
         checkpointing=args.checkpointing,
-        tiny_llama=args.tiny_llama,
     )
     print(f"Total Time: {time.time() - start_time:2f}s")
