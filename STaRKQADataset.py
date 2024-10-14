@@ -60,35 +60,37 @@ class STaRKQADataset(InMemoryDataset):
 
         k_nodes = 4
         k_edges = 4
+        base_graph_method = '1hop' #alt. 2path
+        edge_embedding_method = 'triplet' #alt. relation only
 
         correct_nodes = {}; topk_nodes = {}; subgraph_nodes = {}; pcst_nodes = {}
 
         for index, qa_row in tqdm(dataframe.iterrows()):
             prompt = qa_row[1]
+            query_emb = self.query_embedding_dict[qa_row[0]].numpy()[0]
             with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
-                query_emb = self.query_embedding_dict[qa_row[0]].numpy()[0]
                 topk_node_ids = self.get_nodes_by_vector_search(query_emb, driver, k_nodes)
 
-                correct_ids = eval(qa_row[2])
-                topk_nodes[index] = topk_node_ids
-                correct_nodes[index] = correct_ids
-
-                if self.dataset_version in ['v3']:
+                if base_graph_method == '1hop':
                     subgraph_rels = self.get_subgraph_rels_1hop(topk_node_ids, driver)
                 else:
                     subgraph_rels = self.get_subgraph_rels(topk_node_ids, driver)
 
-                if len(subgraph_rels) < 1:
-                    # topk_node_ids can't form a small connected graph, skip this query
-                    skipped_queries += 1
-                    continue
+            correct_ids = eval(qa_row[2])
+            topk_nodes[index] = topk_node_ids
+            correct_nodes[index] = correct_ids
 
-                if self.dataset_version in ['v2', 'v3']:
-                    subgraph_rels['textEmbedding'] = self._embed_triplet(subgraph_rels['srcType'], subgraph_rels['relType'], subgraph_rels['tgtType'])
-                else:
-                    subgraph_rels['textEmbedding'] = self._embed(subgraph_rels['relType'])
+            if len(subgraph_rels) < 1:
+                # topk_node_ids can't form a small connected graph, skip this query
+                skipped_queries += 1
+                continue
 
-                topk_edge_ids = self.get_edges_by_vector_search(qa_row[0], subgraph_rels, k_edges)
+            if edge_embedding_method == 'triplet':
+                subgraph_rels['textEmbedding'] = self._embed_triplet(subgraph_rels['srcType'], subgraph_rels['relType'], subgraph_rels['tgtType'])
+            else:
+                subgraph_rels['textEmbedding'] = self._embed(subgraph_rels['relType'])
+
+            topk_edge_ids = self.get_edges_by_vector_search(qa_row[0], subgraph_rels, k_edges)
 
             # process ids to consecutive tensor
             src = subgraph_rels['src'].values
@@ -115,22 +117,22 @@ class STaRKQADataset(InMemoryDataset):
             # Retrieve node embedding, label and textual graph description
             with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
                 textual_nodes_df = self.get_textual_nodes(pcst_nodes_original_ids, driver)
-
-                node_embedding = torch.tensor(textual_nodes_df['textEmbedding'].tolist())
-
-                textual_nodes_df.description.fillna("")
-                textual_nodes_df['node_attr'] = textual_nodes_df.apply(lambda row: f"name: {row['name']}, description: {row['description']}", axis=1)
-                textual_nodes_df.rename(columns={'nodeId': 'node_id'}, inplace=True)
-                nodes_desc = textual_nodes_df.drop(['name', 'description', 'textEmbedding'], axis=1).to_csv(index=False)
-
                 original_edges = [(reverse_id_map[src.item()], reverse_id_map[tgt.item()]) for src, tgt in selected_edges.t()]
                 textual_edges_df = self.get_textual_edges(original_edges, driver)
-                edges_desc = textual_edges_df.to_csv(index=False)
 
-                desc = nodes_desc + '\n' + edges_desc
+            node_embedding = torch.tensor(textual_nodes_df['textEmbedding'].tolist())
 
-                answer_ids = eval(qa_row[2])
-                answers = self.get_textual_nodes(answer_ids, driver)['name'].tolist()
+            textual_nodes_df.description.fillna("")
+            textual_nodes_df['node_attr'] = textual_nodes_df.apply(lambda row: f"name: {row['name']}, description: {row['description']}", axis=1)
+            textual_nodes_df.rename(columns={'nodeId': 'node_id'}, inplace=True)
+            nodes_desc = textual_nodes_df.drop(['name', 'description', 'textEmbedding'], axis=1).to_csv(index=False)
+
+            edges_desc = textual_edges_df.to_csv(index=False)
+
+            desc = nodes_desc + '\n' + edges_desc
+
+            answer_ids = eval(qa_row[2])
+            answers = self.get_textual_nodes(answer_ids, driver)['name'].tolist()
 
             enriched_data = Data(
                 x=node_embedding,
