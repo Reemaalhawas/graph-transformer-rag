@@ -23,7 +23,7 @@ from STaRKQADataset import STaRKQADataset
 from STaRKQAVectorSearchDataset import STaRKQAVectorSearchDataset
 
 def get_loss(model, batch, model_save_name) -> Tensor:
-    if model_save_name == 'llm':
+    if model_save_name.startswith('llm'):
         return model(batch.question, batch.label, batch.desc)
     else:
         return model(batch.question, batch.x, batch.edge_index, batch.batch,
@@ -31,7 +31,7 @@ def get_loss(model, batch, model_save_name) -> Tensor:
 
 
 def inference_step(model, batch, model_save_name):
-    if model_save_name == 'llm':
+    if model_save_name.startswith('llm'):
         return model.inference(batch.question, batch.desc)
     else:
         return model.inference(batch.question, batch.x, batch.edge_index,

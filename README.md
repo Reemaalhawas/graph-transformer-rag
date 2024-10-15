@@ -60,3 +60,24 @@ Epochs = 10, k_nodes = 4, same triplet edge embedding. Base graph sampling = 1-h
 Epochs = 10, k_nodes = 4, k_edges = 4,
 Given 4 most similar nodes and edges. Do 2-hop expansion for 4 k_nodes along edges of the top 4 types.
 Pass the resulting graph to GNN & LLM.
+Too slow to generate
+
+# v6
+Set k_nodes = 4, k_edges = 10, use 2-hop between top 4 nodes as base graph. edge_embedding triplet sim.
+
+# v7
+Set k_nodes = 4, k_edges = 10. use 1-hop neighbourhood from top 4 nodes as base graph. edge_embedding triplet sim.
+
+# v8
+Set k_nodes = 4, k_edges = 4. use 1-hop neighbourhood from top 4 nodes as base graph. edge_embedding triplet sim.
+Find top 100 nodes.
+During PCST, assign top <=100 nodes from prizes 4..0 at uniform interval. Assign top 4 edges prizes from 4..0 at interval of 1.
+
+# v9
+Set k_nodes = 4. use 1-hop neighbourhood from top 4 nodes as base graph. edge_embedding triplet sim.
+During PCST, assign top 25 nodes from prizes 4..0. 
+Assign top 2 edgetypes prizes 0.8 and 0.5. Number of prized edges therefore varies.
+
+# v10
+Same as v9.
+But assign top 2 edgetypes prizes 0.5, 0.2.

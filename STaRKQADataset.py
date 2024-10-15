@@ -14,7 +14,7 @@ from torch.utils.data import Dataset
 from torch_geometric.data import Data, InMemoryDataset
 from tqdm import tqdm
 
-from compute_pcst import compute_pcst, assign_prizes_topk
+from compute_pcst import compute_pcst, assign_prizes_topk, assign_prizes_modified
 from compute_metrics import compute_intermediate_metrics
 
 
@@ -58,12 +58,29 @@ class STaRKQADataset(InMemoryDataset):
         dataframe = self.raw_dataset.data.loc[self.raw_dataset.indices]
         skipped_queries = 0
 
-        k_nodes = 4
-        k_edges = 4
-        base_graph_method = '1hop' #alt. 2path
-        edge_embedding_method = 'triplet' #alt. relation only
+
+        if self.dataset_version in ["v1"]:
+            k_nodes = 10
+        else:
+            k_nodes = 4
+
+        if self.dataset_version in ["v6", "v7"]:
+            k_edges = 4
+        else:
+            k_edges = 10
+
+        if self.dataset_version in ["v4", "v7", "v8", "v9", "v10"]:
+            base_graph_method = '1hop'
+        else:
+            base_graph_method = '2path'
+
+        if self.dataset_version in ["v3", "v4", "v6", "v7", "v8", "v9", "v10"]:
+            edge_embedding_method = 'triplet'
+        else:
+            edge_embedding_method = 'relation'
 
         correct_nodes = {}; topk_nodes = {}; subgraph_nodes = {}; pcst_nodes = {}
+        pcst_edges = []
 
         for index, qa_row in tqdm(dataframe.iterrows()):
             prompt = qa_row[1]
@@ -90,7 +107,6 @@ class STaRKQADataset(InMemoryDataset):
             else:
                 subgraph_rels['textEmbedding'] = self._embed(subgraph_rels['relType'])
 
-            topk_edge_ids = self.get_edges_by_vector_search(qa_row[0], subgraph_rels, k_edges)
 
             # process ids to consecutive tensor
             src = subgraph_rels['src'].values
@@ -107,9 +123,24 @@ class STaRKQADataset(InMemoryDataset):
             # Some topk_node_ids may not be in subgraph_rels. Drop them for now.
             mapped_topk_node_ids = [id_map[node] for node in topk_node_ids if node in id_map.keys()]
 
-            node_prizes, edge_prizes = assign_prizes_topk(pcst_base_graph_topology, mapped_topk_node_ids, topk_edge_ids)
+            if self.dataset_version in ["v9", "v10"]:
+                top_edges, second_top_edges = self.get_edges_by_reltype_vector_search(qa_row[0], subgraph_rels)
+                with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
+                    topn_nodes = self.get_topn_similar_nodes(query_emb, unique_nodes.tolist(), driver, 25)
+                mapped_topn_node_ids = [id_map[node] for node in topn_nodes if node in id_map.keys()]
+                if self.dataset_version == "v9":
+                    node_prizes, edge_prizes = assign_prizes_modified(pcst_base_graph_topology, mapped_topn_node_ids, top_edges, second_top_edges)
+                else:
+                    node_prizes, edge_prizes = assign_prizes_modified(pcst_base_graph_topology, mapped_topn_node_ids, top_edges, second_top_edges, 0.5, 0.2)
+
+            else:
+                topk_edge_ids = self.get_edges_by_vector_search(qa_row[0], subgraph_rels, k_edges)
+                node_prizes, edge_prizes = assign_prizes_topk(pcst_base_graph_topology, mapped_topk_node_ids, topk_edge_ids)
+
             pcst, inner_id_mapping, selected_nodes, selected_edges = compute_pcst(pcst_base_graph_topology,
                                                                                   node_prizes, edge_prizes)
+            pcst_edges.append(selected_edges.shape[1])
+
             reverse_id_map = {v: k for k, v in id_map.items()}
             pcst_nodes_original_ids = [reverse_id_map[intermediate_id] for intermediate_id in selected_nodes]
             pcst_nodes[index] = pcst_nodes_original_ids
@@ -132,7 +163,8 @@ class STaRKQADataset(InMemoryDataset):
             desc = nodes_desc + '\n' + edges_desc
 
             answer_ids = eval(qa_row[2])
-            answers = self.get_textual_nodes(answer_ids, driver)['name'].tolist()
+            with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
+                answers = self.get_textual_nodes(answer_ids, driver)['name'].tolist()
 
             enriched_data = Data(
                 x=node_embedding,
@@ -149,6 +181,7 @@ class STaRKQADataset(InMemoryDataset):
         t = {'correct_nodes': correct_nodes, 'topk_nodes': topk_nodes, 'subgraph1_nodes': subgraph_nodes, 'pcst_nodes': pcst_nodes}
         print(f"Evaluate {self.processed_paths[0][:-3]}...")
         compute_intermediate_metrics(t)
+        print(f"Average number of edges in PCST graph is: {np.mean(pcst_edges)}")
         torch.save(t, self.processed_paths[0][:-3] + '_nodes.pt')
         self.save(retrieval_data, self.processed_paths[0])
 
@@ -169,6 +202,23 @@ class STaRKQADataset(InMemoryDataset):
                                        "k": k,
                                        "query_embedding": query_embedding})
         return [rec.data()['nodeId'] for rec in res.records]
+
+
+    def get_topn_similar_nodes(self, query_emb: np.ndarray, node_ids: List, driver: Driver, top_nodes: int) -> List:
+        res = driver.execute_query("""
+        UNWIND $nodeIds AS nodeId
+        MATCH (node:_Entity_ {nodeId:nodeId}) RETURN node.nodeId as nodeId, node.textEmbedding AS textEmbedding
+        """,
+                                   parameters_={
+                                       "nodeIds": node_ids})
+        node_embs = pd.DataFrame([rec.data() for rec in res.records])
+        embeddings = np.vstack(node_embs['textEmbedding'].values)
+        cos_sim = cosine_similarity(embeddings, query_emb.reshape(1,-1)).ravel()
+        top_n_indices = np.argsort(cos_sim)[-top_nodes:][::-1]
+        top_n_nodeIds = node_embs.iloc[top_n_indices]['nodeId'].to_numpy()
+
+        return top_n_nodeIds.tolist()
+
 
     def get_subgraph_rels_1hop(self, node_ids: List, driver: Driver):
         res = driver.execute_query("""
@@ -230,6 +280,30 @@ class STaRKQADataset(InMemoryDataset):
         indices = np.argpartition(sims[0], -k)[-k:]
 
         return indices[np.argsort(sims[0][indices])[::-1]]
+
+    def get_edges_by_reltype_vector_search(self, qa_row_id: int, subgraph_rels: DataFrame):
+        subgraph_df = subgraph_rels.copy()
+        subgraph_df['textEmbedding'] = subgraph_df['textEmbedding'].apply(np.array)
+        grouped = subgraph_df.groupby(['srcType', 'relType', 'tgtType']).first().reset_index()
+
+        prompt_emb = self.query_embedding_dict[qa_row_id]
+        query_embedding = np.array(prompt_emb)
+        grouped['cosine_sim'] = grouped['textEmbedding'].apply(lambda emb: cosine_similarity(query_embedding, emb.reshape(1,-1))[0][0])
+        grouped['cosine_sim'] = grouped['cosine_sim'].astype(float)
+
+        top_2_groups = grouped.nlargest(2, 'cosine_sim')[['srcType', 'relType', 'tgtType']]
+        first_group = top_2_groups.iloc[0]
+        top_edges = subgraph_rels[subgraph_rels[['srcType', 'relType', 'tgtType']].apply(tuple, axis=1) == tuple(first_group)].index.to_numpy()
+
+        if len(top_2_groups) > 1:
+            second_group = top_2_groups.iloc[1]
+            second_edges = subgraph_rels[subgraph_rels[['srcType', 'relType', 'tgtType']].apply(tuple, axis=1) == tuple(
+                second_group)].index.to_numpy()
+
+        else:
+            second_edges = np.array([])
+
+        return top_edges, second_edges
 
     def _chunks(self, xs, n=500):
         n = max(1, n)
