@@ -125,7 +125,8 @@ class STaRKQADataset(InMemoryDataset):
 
             if self.dataset_version == "v9":
                 top_edges, second_top_edges = self.get_edges_by_reltype_vector_search(qa_row[0], subgraph_rels)
-                topn_nodes = self.get_topn_similar_nodes(query_emb, unique_nodes.tolist(), driver, 25)
+                with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
+                    topn_nodes = self.get_topn_similar_nodes(query_emb, unique_nodes.tolist(), driver, 25)
                 mapped_topn_node_ids = [id_map[node] for node in topn_nodes if node in id_map.keys()]
                 node_prizes, edge_prizes = assign_prizes_modified(pcst_base_graph_topology, mapped_topn_node_ids, top_edges, second_top_edges)
             else:
@@ -158,7 +159,8 @@ class STaRKQADataset(InMemoryDataset):
             desc = nodes_desc + '\n' + edges_desc
 
             answer_ids = eval(qa_row[2])
-            answers = self.get_textual_nodes(answer_ids, driver)['name'].tolist()
+            with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
+                answers = self.get_textual_nodes(answer_ids, driver)['name'].tolist()
 
             enriched_data = Data(
                 x=node_embedding,
