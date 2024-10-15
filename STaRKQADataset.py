@@ -69,12 +69,12 @@ class STaRKQADataset(InMemoryDataset):
         else:
             k_edges = 10
 
-        if self.dataset_version in ["v4", "v7", "v8", "v9"]:
+        if self.dataset_version in ["v4", "v7", "v8", "v9", "v10"]:
             base_graph_method = '1hop'
         else:
             base_graph_method = '2path'
 
-        if self.dataset_version in ["v3", "v4", "v6", "v7", "v8", "v9"]:
+        if self.dataset_version in ["v3", "v4", "v6", "v7", "v8", "v9", "v10"]:
             edge_embedding_method = 'triplet'
         else:
             edge_embedding_method = 'relation'
@@ -123,12 +123,16 @@ class STaRKQADataset(InMemoryDataset):
             # Some topk_node_ids may not be in subgraph_rels. Drop them for now.
             mapped_topk_node_ids = [id_map[node] for node in topk_node_ids if node in id_map.keys()]
 
-            if self.dataset_version == "v9":
+            if self.dataset_version in ["v9", "v10"]:
                 top_edges, second_top_edges = self.get_edges_by_reltype_vector_search(qa_row[0], subgraph_rels)
                 with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
                     topn_nodes = self.get_topn_similar_nodes(query_emb, unique_nodes.tolist(), driver, 25)
                 mapped_topn_node_ids = [id_map[node] for node in topn_nodes if node in id_map.keys()]
-                node_prizes, edge_prizes = assign_prizes_modified(pcst_base_graph_topology, mapped_topn_node_ids, top_edges, second_top_edges)
+                if self.dataset_version == "v9":
+                    node_prizes, edge_prizes = assign_prizes_modified(pcst_base_graph_topology, mapped_topn_node_ids, top_edges, second_top_edges)
+                else:
+                    node_prizes, edge_prizes = assign_prizes_modified(pcst_base_graph_topology, mapped_topn_node_ids, top_edges, second_top_edges, 0.5, 0.2)
+
             else:
                 topk_edge_ids = self.get_edges_by_vector_search(qa_row[0], subgraph_rels, k_edges)
                 node_prizes, edge_prizes = assign_prizes_topk(pcst_base_graph_topology, mapped_topk_node_ids, topk_edge_ids)

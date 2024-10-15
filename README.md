@@ -77,3 +77,7 @@ During PCST, assign top <=100 nodes from prizes 4..0 at uniform interval. Assign
 Set k_nodes = 4. use 1-hop neighbourhood from top 4 nodes as base graph. edge_embedding triplet sim.
 During PCST, assign top 25 nodes from prizes 4..0. 
 Assign top 2 edgetypes prizes 0.8 and 0.5. Number of prized edges therefore varies.
+
+# v10
+Same as v9.
+But assign top 2 edgetypes prizes 0.5, 0.2.
