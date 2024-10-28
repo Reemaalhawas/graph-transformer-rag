@@ -5,6 +5,7 @@ from typing import List, Tuple
 import numpy as np
 import pandas as pd
 import torch
+import yaml
 from dotenv import load_dotenv
 from langchain_openai import OpenAIEmbeddings
 from neo4j import Driver, GraphDatabase
@@ -58,26 +59,10 @@ class STaRKQADataset(InMemoryDataset):
         dataframe = self.raw_dataset.data.loc[self.raw_dataset.indices]
         skipped_queries = 0
 
+        config_path = f"configs/star_qa_{self.dataset_version}.yaml"
+        with open(config_path, "r") as f:
+            config = yaml.safe_load(f)
 
-        if self.dataset_version in ["v1"]:
-            k_nodes = 10
-        else:
-            k_nodes = 4
-
-        if self.dataset_version in ["v6", "v7"]:
-            k_edges = 4
-        else:
-            k_edges = 10
-
-        if self.dataset_version in ["v4", "v7", "v8", "v9", "v10"]:
-            base_graph_method = '1hop'
-        else:
-            base_graph_method = '2path'
-
-        if self.dataset_version in ["v3", "v4", "v6", "v7", "v8", "v9", "v10"]:
-            edge_embedding_method = 'triplet'
-        else:
-            edge_embedding_method = 'relation'
 
         correct_nodes = {}; topk_nodes = {}; subgraph_nodes = {}; pcst_nodes = {}
         pcst_edges = []
@@ -86,12 +71,8 @@ class STaRKQADataset(InMemoryDataset):
             prompt = qa_row[1]
             query_emb = self.query_embedding_dict[qa_row[0]].numpy()[0]
             with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
-                topk_node_ids = self.get_nodes_by_vector_search(query_emb, driver, k_nodes)
-
-                if base_graph_method == '1hop':
-                    subgraph_rels = self.get_subgraph_rels_1hop(topk_node_ids, driver)
-                else:
-                    subgraph_rels = self.get_subgraph_rels(topk_node_ids, driver)
+                topk_node_ids = self.get_nodes_by_vector_search(query_emb, config["k_nodes"], driver)
+                subgraph_rels = self.get_subgraph_rels(topk_node_ids, config["cypher_query_type"], driver)
 
             correct_ids = eval(qa_row[2])
             topk_nodes[index] = topk_node_ids
@@ -102,7 +83,7 @@ class STaRKQADataset(InMemoryDataset):
                 skipped_queries += 1
                 continue
 
-            if edge_embedding_method == 'triplet':
+            if config["edge_embedding_method"] == 'triplet':
                 subgraph_rels['textEmbedding'] = self._embed_triplet(subgraph_rels['srcType'], subgraph_rels['relType'], subgraph_rels['tgtType'])
             else:
                 subgraph_rels['textEmbedding'] = self._embed(subgraph_rels['relType'])
@@ -134,7 +115,7 @@ class STaRKQADataset(InMemoryDataset):
                     node_prizes, edge_prizes = assign_prizes_modified(pcst_base_graph_topology, mapped_topn_node_ids, top_edges, second_top_edges, 0.5, 0.2)
 
             else:
-                topk_edge_ids = self.get_edges_by_vector_search(qa_row[0], subgraph_rels, k_edges)
+                topk_edge_ids = self.get_edges_by_vector_search(qa_row[0], subgraph_rels, config["k_edges"])
                 node_prizes, edge_prizes = assign_prizes_topk(pcst_base_graph_topology, mapped_topk_node_ids, topk_edge_ids)
 
             pcst, inner_id_mapping, selected_nodes, selected_edges = compute_pcst(pcst_base_graph_topology,
@@ -186,7 +167,7 @@ class STaRKQADataset(InMemoryDataset):
         self.save(retrieval_data, self.processed_paths[0])
 
 
-    def get_nodes_by_vector_search(self, query_embedding: np.ndarray, driver: Driver, k=4) -> List:
+    def get_nodes_by_vector_search(self, query_embedding: np.ndarray, k_nodes: int, driver: Driver) -> List:
         """
         Given a prompt, encode it with OpenAI's API and search for similar nodes in the SKB graph in Neo4j
 
@@ -199,7 +180,7 @@ class STaRKQADataset(InMemoryDataset):
         """,
                                    parameters_={
                                        "index": "text_embeddings",
-                                       "k": k,
+                                       "k": k_nodes,
                                        "query_embedding": query_embedding})
         return [rec.data()['nodeId'] for rec in res.records]
 
@@ -220,50 +201,50 @@ class STaRKQADataset(InMemoryDataset):
         return top_n_nodeIds.tolist()
 
 
-    def get_subgraph_rels_1hop(self, node_ids: List, driver: Driver):
-        res = driver.execute_query("""
+    def get_subgraph_rels(self, node_ids: List, cypher_query: str, driver: Driver):
+        if cypher_query == "1hop":
+            res = driver.execute_query("""
+                UNWIND $nodeIds AS nodeId
+                MATCH (source:_Entity_ {nodeId:nodeId})-[rl]->{0,1}(target)
+
+                UNWIND rl as r
+                WITH DISTINCT r
+                MATCH (m)-[r]-(n)
+                RETURN
+                m.nodeId as src,
+                n.nodeId as tgt,
+                type(r) as relType,
+                labels(m)[0] as srcType,
+                labels(n)[0] as tgtType
+            """,
+                                       parameters_={'nodeIds': node_ids})
+
+        if cypher_query == "2path":
+            res = driver.execute_query("""
             UNWIND $nodeIds AS nodeId
-            MATCH (source:_Entity_ {nodeId:nodeId})-[rl]->{0,1}(target)
-            
-            UNWIND rl as r
+            MATCH(node:_Entity_ {nodeId:nodeId})
+            // create filtered cartesian product
+            WITH collect(node) AS sources, collect(node) AS targets
+            UNWIND sources as source
+            UNWIND targets as target
+            WITH source, target
+            WHERE source > target //how is this calculated? on element id?...it works
+    
+            // find connecting paths
+            MATCH (source)-[rl]->{0,2}(target)
+    
+            //get rels
+            UNWIND rl AS r
             WITH DISTINCT r
-            MATCH (m)-[r]-(n)
+            MATCH (m)-[r]->(n)
             RETURN
-            m.nodeId as src,
-            n.nodeId as tgt,
-            type(r) as relType,
+            m.nodeId AS src,
+            n.nodeId AS tgt,
+            type(r) AS relType,
             labels(m)[0] as srcType,
             labels(n)[0] as tgtType
-        """,
-                                   parameters_={'nodeIds': node_ids})
-        return pd.DataFrame([rec.data() for rec in res.records])
-
-    def get_subgraph_rels(self, node_ids: List, driver: Driver):
-        res = driver.execute_query("""
-        UNWIND $nodeIds AS nodeId
-        MATCH(node:_Entity_ {nodeId:nodeId})
-        // create filtered cartesian product
-        WITH collect(node) AS sources, collect(node) AS targets
-        UNWIND sources as source
-        UNWIND targets as target
-        WITH source, target
-        WHERE source > target //how is this calculated? on element id?...it works
-
-        // find connecting paths
-        MATCH (source)-[rl]->{0,2}(target)
-
-        //get rels
-        UNWIND rl AS r
-        WITH DISTINCT r
-        MATCH (m)-[r]->(n)
-        RETURN
-        m.nodeId AS src,
-        n.nodeId AS tgt,
-        type(r) AS relType,
-        labels(m)[0] as srcType,
-        labels(n)[0] as tgtType
-        """,
-                                   parameters_={"nodeIds": node_ids})
+            """,
+                                       parameters_={"nodeIds": node_ids})
         return pd.DataFrame([rec.data() for rec in res.records])
 
     def get_edges_by_vector_search(self, qa_row_id: int, subgraph_rels: DataFrame, k=4) -> np.ndarray:
