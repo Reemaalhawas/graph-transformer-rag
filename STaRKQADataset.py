@@ -59,20 +59,24 @@ class STaRKQADataset(InMemoryDataset):
         dataframe = self.raw_dataset.data.loc[self.raw_dataset.indices]
         skipped_queries = 0
 
-        config_path = f"configs/star_qa_{self.dataset_version}.yaml"
+        config_path = f"configs/stark_qa_{self.dataset_version}.yaml"
         with open(config_path, "r") as f:
             config = yaml.safe_load(f)
 
 
         correct_nodes = {}; topk_nodes = {}; subgraph_nodes = {}; pcst_nodes = {}
         pcst_edges = []
+        qa_row_time = []
 
         for index, qa_row in tqdm(dataframe.iterrows()):
             prompt = qa_row[1]
             query_emb = self.query_embedding_dict[qa_row[0]].numpy()[0]
+            t = time.time()
             with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
-                topk_node_ids = self.get_nodes_by_vector_search(query_emb, config["k_nodes"], driver)
-                subgraph_rels = self.get_subgraph_rels(topk_node_ids, config["cypher_query_type"], driver)
+                topk_node_ids = self.get_nodes_by_vector_search(query_emb, config["cypher"]["k_nodes"], driver)
+                subgraph_rels = self.get_subgraph_rels(topk_node_ids, config["cypher"]["cypher_query_type"], driver)
+
+            print(f"Cypher query retrieval for {index} took {time.time() - t} seconds.")
 
             correct_ids = eval(qa_row[2])
             topk_nodes[index] = topk_node_ids
@@ -83,7 +87,7 @@ class STaRKQADataset(InMemoryDataset):
                 skipped_queries += 1
                 continue
 
-            if config["edge_embedding_method"] == 'triplet':
+            if config["cypher"]["edge_embedding_method"] == 'triplet':
                 subgraph_rels['textEmbedding'] = self._embed_triplet(subgraph_rels['srcType'], subgraph_rels['relType'], subgraph_rels['tgtType'])
             else:
                 subgraph_rels['textEmbedding'] = self._embed(subgraph_rels['relType'])
@@ -102,18 +106,15 @@ class STaRKQADataset(InMemoryDataset):
             pcst_base_graph_topology = Data(edge_index=torch.tensor([src_consecutive, tgt_consecutive], dtype=torch.long))
 
 
-            if self.dataset_version in ["v9", "v10"]:
+            if self.dataset_version in ["v9", "v10", "v12"]:
                 top_edges, second_top_edges = self.get_edges_by_reltype_vector_search(qa_row[0], subgraph_rels)
                 with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
-                    topn_nodes = self.get_topn_similar_nodes(query_emb, unique_nodes.tolist(), driver, 25)
+                    topn_nodes = self.get_topn_similar_nodes(query_emb, unique_nodes.tolist(), driver, config["pcst"]["prized_nodes"])
                 mapped_topn_node_ids = [id_map[node] for node in topn_nodes if node in id_map.keys()]
-                if self.dataset_version == "v9":
-                    node_prizes, edge_prizes = assign_prizes_modified(pcst_base_graph_topology, mapped_topn_node_ids, top_edges, second_top_edges)
-                else:
-                    node_prizes, edge_prizes = assign_prizes_modified(pcst_base_graph_topology, mapped_topn_node_ids, top_edges, second_top_edges, 0.5, 0.2)
 
+                node_prizes, edge_prizes = assign_prizes_modified(pcst_base_graph_topology, mapped_topn_node_ids, top_edges, second_top_edges, config["pcst"]["top_edge_prize"], config["pcst"]["second_edge_prize"])
             else:
-                topk_edge_ids = self.get_edges_by_vector_search(qa_row[0], subgraph_rels, config["k_edges"])
+                topk_edge_ids = self.get_edges_by_vector_search(qa_row[0], subgraph_rels, config[["cypher"]]["k_edges"])
                 mapped_topk_node_ids = [id_map[node] for node in topk_node_ids if node in id_map.keys()]
                 node_prizes, edge_prizes = assign_prizes_topk(pcst_base_graph_topology, mapped_topk_node_ids, topk_edge_ids)
 
@@ -155,6 +156,8 @@ class STaRKQADataset(InMemoryDataset):
                 desc=desc,
             )
 
+            print(f"Processing {index} took {time.time() - t} seconds.")
+            qa_row_time.append(time.time() - t)
             retrieval_data.append(enriched_data)
 
         print(f"Skipped {skipped_queries} queries due to insufficient subgraph data.")
@@ -162,6 +165,8 @@ class STaRKQADataset(InMemoryDataset):
         print(f"Evaluate {self.processed_paths[0][:-3]}...")
         compute_intermediate_metrics(t)
         print(f"Average number of edges in PCST graph is: {np.mean(pcst_edges)}")
+        print(f"Average time per query: {np.mean(qa_row_time)}")
+        print(f"Total time: {np.sum(qa_row_time)})")
         torch.save(t, self.processed_paths[0][:-3] + '_nodes.pt')
         self.save(retrieval_data, self.processed_paths[0])
 
@@ -308,21 +313,6 @@ class STaRKQADataset(InMemoryDataset):
             second_edges = np.array([])
 
         return top_edges, second_edges
-
-    def _chunks(self, xs, n=500):
-        n = max(1, n)
-        return [xs[i:i + n] for i in range(0, len(xs), n)]
-
-    # def _embed(self, doc_list, chunk_size=500):
-    #     embeddings = []
-    #     for docs in self._chunks(doc_list, chunk_size):
-    #         try:
-    #             embeddings.extend(self.embedding_model.embed_documents(docs))
-    #         except Exception as e:
-    #             print(f"Error while embedding the documents: {e}")
-    #             exit()
-    #         time.sleep(1)
-    #     return embeddings
 
     def _embed(self, reltype_list: List[str]):
         return [self.reltype_embedding_dict[reltype] for reltype in reltype_list]

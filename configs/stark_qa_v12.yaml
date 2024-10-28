@@ -1,6 +1,6 @@
 cypher:
   k_nodes: 4
-  k_edges: 4
+  k_edges: null
   cypher_query_type: "2hop"
   edge_embedding_method: "triplet"
 
@@ -8,4 +8,6 @@ cypher:
 pcst:
   prized_nodes: 100
   prized_edge_types: 2
+  top_edge_prize: 0.4
+  second_edge_prize: 0.3
 
