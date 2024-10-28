@@ -101,8 +101,6 @@ class STaRKQADataset(InMemoryDataset):
             tgt_consecutive = [id_map[node] for node in tgt]
             pcst_base_graph_topology = Data(edge_index=torch.tensor([src_consecutive, tgt_consecutive], dtype=torch.long))
 
-            # Some topk_node_ids may not be in subgraph_rels. Drop them for now.
-            mapped_topk_node_ids = [id_map[node] for node in topk_node_ids if node in id_map.keys()]
 
             if self.dataset_version in ["v9", "v10"]:
                 top_edges, second_top_edges = self.get_edges_by_reltype_vector_search(qa_row[0], subgraph_rels)
@@ -116,6 +114,7 @@ class STaRKQADataset(InMemoryDataset):
 
             else:
                 topk_edge_ids = self.get_edges_by_vector_search(qa_row[0], subgraph_rels, config["k_edges"])
+                mapped_topk_node_ids = [id_map[node] for node in topk_node_ids if node in id_map.keys()]
                 node_prizes, edge_prizes = assign_prizes_topk(pcst_base_graph_topology, mapped_topk_node_ids, topk_edge_ids)
 
             pcst, inner_id_mapping, selected_nodes, selected_edges = compute_pcst(pcst_base_graph_topology,
@@ -245,6 +244,30 @@ class STaRKQADataset(InMemoryDataset):
             labels(n)[0] as tgtType
             """,
                                        parameters_={"nodeIds": node_ids})
+
+        if cypher_query == "2hop":
+            res = driver.execute_query("""
+            MATCH (source)-[r1]->(middle)-[r2]->(target)
+            WHERE source.nodeId IN $nodeIds
+            CALL (source, middle, target, r1, r2) {
+                RETURN
+                source.nodeId as src,
+                middle.nodeId as tgt,
+                type(r1) as relType,
+                labels(source)[0] as srcType,
+                labels(middle)[0] as tgtType
+                UNION
+                RETURN
+                middle.nodeId as src,
+                target.nodeId as tgt,
+                type(r2) as relType,
+                labels(middle)[0] as srcType,
+                labels(target)[0] as tgtType
+            }   
+                RETURN src, tgt, relType, srcType, tgtType
+            """,
+                                       parameters_={"nodeIds": node_ids})
+
         return pd.DataFrame([rec.data() for rec in res.records])
 
     def get_edges_by_vector_search(self, qa_row_id: int, subgraph_rels: DataFrame, k=4) -> np.ndarray:
