@@ -47,6 +47,27 @@ def assign_prizes_modified(
 
     return n_prizes, e_prizes
 
+
+# def assign_prizes(
+#     base_subgraph_data: Data,
+#     prized_node_ids: List,
+#     prized_edge_ids: List[np.ndarray],
+#     max_node_prize: float = 4,
+#     edge_prizes: List[float] = [0.5],
+# ) -> tuple[torch.tensor, torch.tensor]:
+#
+#     n_prizes = torch.zeros(base_subgraph_data.num_nodes)
+#     n_prizes[prized_node_ids] = torch.linspace(max_node_prize, 0, steps=len(prized_node_ids)).float()
+#
+#     assert len(prized_edge_ids) == len(edge_prizes)
+#     e_prizes = torch.zeros(base_subgraph_data.num_edges)
+#     for group, edge_id_group in enumerate(prized_edge_ids):
+#         for edge_id in edge_id_group:
+#             e_prizes[edge_id] = edge_prizes[group]
+#
+#     return n_prizes, e_prizes
+
+
 def compute_pcst(
     base_subgraph_data: Data,
     n_prizes: torch.tensor,

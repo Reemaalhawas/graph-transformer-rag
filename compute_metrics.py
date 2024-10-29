@@ -7,7 +7,10 @@ import pandas as pd
 def compute_intermediate_metrics(correct_nodes: dict[str, list[int]], predicted_nodes: dict[str, np.ndarray]):
     precisions = []
     recalls = []
-    hit_at_1 = []
+    hits_at_1 = []
+    hits_at_5 = []
+    recalls_at_20 = []
+    reciprocal_ranks = []
     num_guesses = []
     f1s = []
 
@@ -22,7 +25,10 @@ def compute_intermediate_metrics(correct_nodes: dict[str, list[int]], predicted_
         if num_correct_predictions == 0:
             precisions.append(0)
             recalls.append(0)
-            hit_at_1.append(0)
+            hits_at_1.append(0)
+            hits_at_5.append(0)
+            recalls_at_20.append(0)
+            reciprocal_ranks.append(0)
             num_guesses.append(len(predicted_nodes))
             f1s.append(0)
         else:
@@ -30,16 +36,29 @@ def compute_intermediate_metrics(correct_nodes: dict[str, list[int]], predicted_
             precisions.append(prec)
             rec = num_correct_predictions / len(set(correct_nodes))
             recalls.append(rec)
+            num_correct_predictions_at_20 = len(set(predicted_nodes[:20]).intersection(set(correct_nodes)))
+            recalls_at_20.append(num_correct_predictions_at_20 / len(set(correct_nodes)))
             f1s.append(2 / (1 / prec + 1 / rec))
-            hit_at_1.append(1 * (predicted_nodes[
+            hits_at_1.append(1 * (predicted_nodes[
                                      0] in correct_nodes))  # only makes sense if ordered (compare hist@first vs hits@last)
+            hits_at_5.append(1 * (len(set(predicted_nodes[:5]).intersection(set(correct_nodes))) > 0))
+            for i, node in enumerate(predicted_nodes):
+                if node in correct_nodes:
+                    rr = 1 / (i + 1)
+                    break
+            else:
+                rr = 0
+            reciprocal_ranks.append(rr)
             num_guesses.append(len(predicted_nodes))
 
     print(f"F1:              {np.mean(f1s)}")
     print(f"Precision:       {np.mean(precisions)}")
     print(f"Recall:          {np.mean(recalls)}")
-    print(f"Exact hit@1:     {np.mean(hit_at_1)}")
+    print(f"Exact hit@1:     {np.mean(hits_at_1)}")
+    print(f"Exact hit@5:     {np.mean(hits_at_5)}")
     print(f"Exact hit@any:   {np.mean(np.array(precisions) != 0)}")
+    print(f"Recall@20:       {np.mean(recalls_at_20)}")
+    print(f"MRR:             {np.mean(reciprocal_ranks)}")
     print(f"Num predictions: {np.mean(num_guesses)}")
 
 def compute_metrics(eval_output, skip_invalid_hit=True):

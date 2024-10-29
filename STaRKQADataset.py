@@ -56,7 +56,7 @@ class STaRKQADataset(InMemoryDataset):
 
         retrieval_data = []
 
-        dataframe = self.raw_dataset.data.loc[self.raw_dataset.indices].head(5)
+        dataframe = self.raw_dataset.data.loc[self.raw_dataset.indices]
         skipped_queries = 0
 
         # Cypher query retrieval
@@ -126,7 +126,7 @@ class STaRKQADataset(InMemoryDataset):
             tgt_consecutive = [id_map[node] for node in tgt]
             pcst_base_graph_topology = Data(edge_index=torch.tensor([src_consecutive, tgt_consecutive], dtype=torch.long))
 
-            if self.algo_config_version in [2]:
+            if self.algo_config_version in [1]:
                 top_edges, second_top_edges = self.get_edges_by_reltype_vector_search(qa_row[0], subgraph_rels)
                 with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
                     topn_nodes = self.get_topn_similar_nodes(query_emb, unique_nodes.tolist(), driver, pcst_config["prized_nodes"])

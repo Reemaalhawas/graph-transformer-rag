@@ -1,3 +1,4 @@
 edge_embedding_method: "triplet"
 prized_nodes: 100
 k_edges: 4
+max_node_prize: 4
