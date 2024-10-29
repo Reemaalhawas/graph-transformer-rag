@@ -36,7 +36,7 @@ def assign_prizes_modified(
     # Assign prizes to nodes based on their similarity to the question
     interval = 4/len(top_node_ids)
     n_prizes = torch.zeros(base_subgraph_data.num_nodes)
-    n_prizes[top_node_ids] = torch.arange(4, 0, -interval).float()
+    n_prizes[top_node_ids] = torch.linspace(4, 0, steps=len(top_node_ids)).float()
 
     # Assign prizes to edges based on their similarity to the question
     e_prizes = torch.zeros(base_subgraph_data.num_edges)
