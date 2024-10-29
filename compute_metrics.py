@@ -4,16 +4,16 @@ import numpy as np
 import pandas as pd
 
 
-def compute_intermediate_metrics(t:dict[str,dict[int,list[int]]]):
+def compute_intermediate_metrics(correct_nodes: dict[str, list[int]], predicted_nodes: dict[str, list[int]]):
     precisions = []
     recalls = []
     hit_at_1 = []
     num_guesses = []
     f1s = []
 
-    ids = t['correct_nodes'].keys()
-    all_correct_nodes = [t['correct_nodes'][id] for id in ids]
-    all_predicted_nodes = [t['pcst_nodes'].get(id, []) for id in ids]
+    ids = correct_nodes.keys()
+    all_correct_nodes = [correct_nodes[id] for id in ids]
+    all_predicted_nodes = [predicted_nodes.get(id, []) for id in ids]
 
     for predicted_nodes, correct_nodes in zip(all_predicted_nodes, all_correct_nodes):
 

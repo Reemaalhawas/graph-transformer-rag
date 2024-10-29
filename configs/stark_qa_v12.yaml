@@ -1,7 +1,7 @@
 cypher:
   k_nodes: 4
   k_edges: null
-  cypher_query_type: "2hop"
+  cypher_query_type: "1hop"
   edge_embedding_method: "triplet"
 
 
