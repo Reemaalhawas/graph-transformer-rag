@@ -59,6 +59,7 @@ class STaRKQADataset(InMemoryDataset):
         dataframe = self.raw_dataset.data.loc[self.raw_dataset.indices].head(5)
         skipped_queries = 0
 
+        # Cypher query retrieval
         with open(f"configs/retrieval_config_v{self.retrieval_config_version}.yaml", "r") as f:
             cypher_config = yaml.safe_load(f)
 
@@ -75,6 +76,7 @@ class STaRKQADataset(InMemoryDataset):
                 query_emb = self.query_embedding_dict[qa_row[0]].numpy()[0]
                 with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
                     topk_node_ids = self.get_nodes_by_vector_search(query_emb, cypher_config["k_nodes"], driver)
+                    # Variations of cypher queries are supported here
                     subgraph_rels = self.get_subgraph_rels(topk_node_ids, cypher_config["cypher_query_type"], driver)
                     base_subgraph_rels[index] = subgraph_rels
                 print(f"Cypher query retrieval for {index} took {time.time() - t} seconds.")
@@ -92,6 +94,7 @@ class STaRKQADataset(InMemoryDataset):
         print(f"All cypher query retrieval completed in {time.time() - t} seconds.")
 
 
+        # PCST subgraph pruning
         with open(f"configs/algo_config_v{self.algo_config_version}.yaml", "r") as f:
             pcst_config = yaml.safe_load(f)
 
@@ -123,7 +126,7 @@ class STaRKQADataset(InMemoryDataset):
             tgt_consecutive = [id_map[node] for node in tgt]
             pcst_base_graph_topology = Data(edge_index=torch.tensor([src_consecutive, tgt_consecutive], dtype=torch.long))
 
-            if self.algo_config_version in [0]:
+            if self.algo_config_version in [2]:
                 top_edges, second_top_edges = self.get_edges_by_reltype_vector_search(qa_row[0], subgraph_rels)
                 with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
                     topn_nodes = self.get_topn_similar_nodes(query_emb, unique_nodes.tolist(), driver, pcst_config["prized_nodes"])
@@ -153,9 +156,7 @@ class STaRKQADataset(InMemoryDataset):
             textual_nodes_df['node_attr'] = textual_nodes_df.apply(lambda row: f"name: {row['name']}, description: {row['description']}", axis=1)
             textual_nodes_df.rename(columns={'nodeId': 'node_id'}, inplace=True)
             nodes_desc = textual_nodes_df.drop(['name', 'description', 'textEmbedding'], axis=1).to_csv(index=False)
-
             edges_desc = textual_edges_df.to_csv(index=False)
-
             desc = nodes_desc + '\n' + edges_desc
 
             answer_ids = eval(qa_row[2])
@@ -165,7 +166,7 @@ class STaRKQADataset(InMemoryDataset):
             enriched_data = Data(
                 x=node_embedding,
                 edge_index=pcst.edge_index,
-                edge_attr=None,  # add edge_attr if needed
+                edge_attr=None,
                 question=f"Question: {prompt}\nAnswer: ",
                 label=('|').join(answers).lower(),
                 desc=desc,

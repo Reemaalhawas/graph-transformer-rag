@@ -1,1 +1,2 @@
-# vectorrag
+k_nodes: 4
+cypher_query_type: "1hop"
