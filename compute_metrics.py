@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 
 
-def compute_intermediate_metrics(correct_nodes: dict[str, list[int]], predicted_nodes: dict[str, list[int]]):
+def compute_intermediate_metrics(correct_nodes: dict[str, list[int]], predicted_nodes: dict[str, np.ndarray]):
     precisions = []
     recalls = []
     hit_at_1 = []
