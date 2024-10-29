@@ -25,15 +25,15 @@ class STaRKQADataset(InMemoryDataset):
         self,
         root: str,
         raw_dataset: Dataset,
-        dataset_version: str,
+        retrieval_config_version: int,
+        algo_config_version: int,
         split: str = "train",
         force_reload: bool = False,
     ) -> None:
         self.split = split
         self.raw_dataset = raw_dataset
-        self.dataset_version = dataset_version
-        #self.embedding_model = OpenAIEmbeddings(model="text-embedding-ada-002")
-        #embedding_dimension is fixed as 1536
+        self.retrieval_config_version = retrieval_config_version
+        self.algo_config_version = algo_config_version
         # load from parent directory of this file
         self.reltype_embedding_dict = torch.load(os.path.join(os.path.dirname(__file__), 'data-loading/emb/prime/text-embedding-ada-002/doc/reltype_emb_dict.pt'))
         self.query_embedding_dict = torch.load(os.path.join(os.path.dirname(__file__), 'data-loading/emb/prime/text-embedding-ada-002/query/query_emb_dict.pt'))
@@ -56,26 +56,26 @@ class STaRKQADataset(InMemoryDataset):
 
         retrieval_data = []
 
-        dataframe = self.raw_dataset.data.loc[self.raw_dataset.indices]
+        dataframe = self.raw_dataset.data.loc[self.raw_dataset.indices].head(5)
         skipped_queries = 0
 
-        config_path = f"configs/stark_qa_{self.dataset_version}.yaml"
-        with open(config_path, "r") as f:
-            config = yaml.safe_load(f)
+        with open(f"configs/retrieval_config_v{self.retrieval_config_version}.yaml", "r") as f:
+            cypher_config = yaml.safe_load(f)
 
         base_subgraph_rels = {}
-        base_subgraphs_path = self.processed_paths[0][:-3] + '_base_subgraph.pt'
+        base_subgraph_folder = os.path.join(os.path.dirname(__file__), f'base_subgraphs/v{self.retrieval_config_version}/')
+        base_subgraph_file = f"{base_subgraph_folder}{self.split}_data_base_subgraph.pt"
         t = time.time()
-        if os.path.exists(base_subgraphs_path):
-            base_subgraph_rels = torch.load(base_subgraphs_path)
+        if os.path.exists(base_subgraph_file):
+            base_subgraph_rels = torch.load(base_subgraph_file)
         else:
             subgraph_nodes = {}
             correct_nodes = {}
             for index, qa_row in tqdm(dataframe.iterrows()):
                 query_emb = self.query_embedding_dict[qa_row[0]].numpy()[0]
                 with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
-                    topk_node_ids = self.get_nodes_by_vector_search(query_emb, config["cypher"]["k_nodes"], driver)
-                    subgraph_rels = self.get_subgraph_rels(topk_node_ids, config["cypher"]["cypher_query_type"], driver)
+                    topk_node_ids = self.get_nodes_by_vector_search(query_emb, cypher_config["k_nodes"], driver)
+                    subgraph_rels = self.get_subgraph_rels(topk_node_ids, cypher_config["cypher_query_type"], driver)
                     base_subgraph_rels[index] = subgraph_rels
                 print(f"Cypher query retrieval for {index} took {time.time() - t} seconds.")
 
@@ -86,10 +86,14 @@ class STaRKQADataset(InMemoryDataset):
                 unique_nodes = np.unique(np.concatenate([src, tgt]))
                 subgraph_nodes[index] = unique_nodes
 
-            torch.save(base_subgraph_rels, self.processed_paths[0][:-3] + '_base_subgraph.pt')
+            os.makedirs(base_subgraph_folder, exist_ok=True)
+            torch.save(base_subgraph_rels, base_subgraph_file)
             compute_intermediate_metrics(correct_nodes, subgraph_nodes)
         print(f"All cypher query retrieval completed in {time.time() - t} seconds.")
 
+
+        with open(f"configs/algo_config_v{self.algo_config_version}.yaml", "r") as f:
+            pcst_config = yaml.safe_load(f)
 
         t = time.time()
         correct_nodes = {}
@@ -105,7 +109,7 @@ class STaRKQADataset(InMemoryDataset):
                 skipped_queries += 1
                 continue
 
-            if config["cypher"]["edge_embedding_method"] == 'triplet':
+            if pcst_config["edge_embedding_method"] == 'triplet':
                 subgraph_rels['textEmbedding'] = self._embed_triplet(subgraph_rels['srcType'], subgraph_rels['relType'], subgraph_rels['tgtType'])
             else:
                 subgraph_rels['textEmbedding'] = self._embed(subgraph_rels['relType'])
@@ -119,14 +123,14 @@ class STaRKQADataset(InMemoryDataset):
             tgt_consecutive = [id_map[node] for node in tgt]
             pcst_base_graph_topology = Data(edge_index=torch.tensor([src_consecutive, tgt_consecutive], dtype=torch.long))
 
-            if self.dataset_version in ["v9", "v10", "v12"]:
+            if self.algo_config_version in [0]:
                 top_edges, second_top_edges = self.get_edges_by_reltype_vector_search(qa_row[0], subgraph_rels)
                 with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
-                    topn_nodes = self.get_topn_similar_nodes(query_emb, unique_nodes.tolist(), driver, config["pcst"]["prized_nodes"])
+                    topn_nodes = self.get_topn_similar_nodes(query_emb, unique_nodes.tolist(), driver, pcst_config["prized_nodes"])
                 mapped_topn_node_ids = [id_map[node] for node in topn_nodes if node in id_map.keys()]
-                node_prizes, edge_prizes = assign_prizes_modified(pcst_base_graph_topology, mapped_topn_node_ids, top_edges, second_top_edges, config["pcst"]["top_edge_prize"], config["pcst"]["second_edge_prize"])
+                node_prizes, edge_prizes = assign_prizes_modified(pcst_base_graph_topology, mapped_topn_node_ids, top_edges, second_top_edges, pcst_config["top_edge_prize"], pcst_config["second_edge_prize"])
             else:
-                topk_edge_ids = self.get_edges_by_vector_search(qa_row[0], subgraph_rels, config[["cypher"]]["k_edges"])
+                topk_edge_ids = self.get_edges_by_vector_search(qa_row[0], subgraph_rels, pcst_config["k_edges"])
                 mapped_topk_node_ids = [id_map[node] for node in topk_node_ids if node in id_map.keys()]
                 node_prizes, edge_prizes = assign_prizes_topk(pcst_base_graph_topology, mapped_topk_node_ids, topk_edge_ids)
 
