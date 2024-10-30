@@ -66,13 +66,12 @@ class STaRKQADataset(InMemoryDataset):
         base_subgraph_rels = {}
         base_subgraph_folder = os.path.join(os.path.dirname(__file__), f'base_subgraphs/v{self.retrieval_config_version}/')
         base_subgraph_file = f"{base_subgraph_folder}{self.split}_data_base_subgraph.pt"
-
-        topk_node_ids_file = f"{base_subgraph_folder}{self.split}_data_topk_node_ids.pt"
+        #topk_node_ids_file = f"{base_subgraph_folder}{self.split}_data_topk_node_ids.pt"
 
         t = time.time()
-        if os.path.exists(base_subgraph_file) and os.path.exists(topk_node_ids_file):
+        if os.path.exists(base_subgraph_file):
             base_subgraph_rels = torch.load(base_subgraph_file)
-            topk_node_ids = torch.load(topk_node_ids_file)
+            #topk_node_ids = torch.load(topk_node_ids_file)
         else:
             subgraph_nodes = {}
             correct_nodes = {}
@@ -95,7 +94,7 @@ class STaRKQADataset(InMemoryDataset):
 
             os.makedirs(base_subgraph_folder, exist_ok=True)
             torch.save(base_subgraph_rels, base_subgraph_file)
-            torch.save(topk_node_ids, topk_node_ids_file)
+            #torch.save(topk_node_ids, topk_node_ids_file)
             compute_intermediate_metrics(correct_nodes, subgraph_nodes)
         print(f"All cypher query retrieval completed in {time.time() - t} seconds.")
 
@@ -133,16 +132,16 @@ class STaRKQADataset(InMemoryDataset):
             tgt_consecutive = [id_map[node] for node in tgt]
             pcst_base_graph_topology = Data(edge_index=torch.tensor([src_consecutive, tgt_consecutive], dtype=torch.long))
 
+            with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
+                topn_nodes = self.get_topn_similar_nodes(query_emb, unique_nodes.tolist(), driver, pcst_config["prized_nodes"])
+            mapped_topn_node_ids = [id_map[node] for node in topn_nodes if node in id_map.keys()]
+
             if self.algo_config_version in [1]:
                 top_edges, second_top_edges = self.get_edges_by_reltype_vector_search(qa_row[0], subgraph_rels)
-                with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
-                    topn_nodes = self.get_topn_similar_nodes(query_emb, unique_nodes.tolist(), driver, pcst_config["prized_nodes"])
-                mapped_topn_node_ids = [id_map[node] for node in topn_nodes if node in id_map.keys()]
                 node_prizes, edge_prizes = assign_prizes_modified(pcst_base_graph_topology, mapped_topn_node_ids, top_edges, second_top_edges, pcst_config["top_edge_prize"], pcst_config["second_edge_prize"])
             else:
                 topk_edge_ids = self.get_edges_by_vector_search(qa_row[0], subgraph_rels, pcst_config["k_edges"])
-                mapped_topk_node_ids = [id_map[node] for node in topk_node_ids if node in id_map.keys()]
-                node_prizes, edge_prizes = assign_prizes_topk(pcst_base_graph_topology, mapped_topk_node_ids, topk_edge_ids)
+                node_prizes, edge_prizes = assign_prizes_topk(pcst_base_graph_topology, mapped_topn_node_ids, topk_edge_ids)
 
             pcst, inner_id_mapping, selected_nodes, selected_edges = compute_pcst(pcst_base_graph_topology,
                                                                                   node_prizes, edge_prizes)
