@@ -66,20 +66,25 @@ class STaRKQADataset(InMemoryDataset):
         base_subgraph_rels = {}
         base_subgraph_folder = os.path.join(os.path.dirname(__file__), f'base_subgraphs/v{self.retrieval_config_version}/')
         base_subgraph_file = f"{base_subgraph_folder}{self.split}_data_base_subgraph.pt"
+
+        topk_node_ids_file = f"{base_subgraph_folder}{self.split}_data_topk_node_ids.pt"
+
         t = time.time()
-        if os.path.exists(base_subgraph_file):
+        if os.path.exists(base_subgraph_file) and os.path.exists(topk_node_ids_file):
             base_subgraph_rels = torch.load(base_subgraph_file)
+            topk_node_ids = torch.load(topk_node_ids_file)
         else:
             subgraph_nodes = {}
             correct_nodes = {}
             for index, qa_row in tqdm(dataframe.iterrows()):
+                t1 = time.time()
                 query_emb = self.query_embedding_dict[qa_row[0]].numpy()[0]
                 with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
                     topk_node_ids = self.get_nodes_by_vector_search(query_emb, cypher_config["k_nodes"], driver)
                     # Variations of cypher queries are supported here
                     subgraph_rels = self.get_subgraph_rels(topk_node_ids, cypher_config["cypher_query_type"], driver)
                     base_subgraph_rels[index] = subgraph_rels
-                print(f"Cypher query retrieval for {index} took {time.time() - t} seconds.")
+                print(f"Cypher query retrieval for {index} took {time.time() - t1} seconds.")
 
                 correct_ids = eval(qa_row[2])
                 correct_nodes[index] = correct_ids
@@ -90,6 +95,7 @@ class STaRKQADataset(InMemoryDataset):
 
             os.makedirs(base_subgraph_folder, exist_ok=True)
             torch.save(base_subgraph_rels, base_subgraph_file)
+            torch.save(topk_node_ids, topk_node_ids_file)
             compute_intermediate_metrics(correct_nodes, subgraph_nodes)
         print(f"All cypher query retrieval completed in {time.time() - t} seconds.")
 
@@ -102,6 +108,7 @@ class STaRKQADataset(InMemoryDataset):
         correct_nodes = {}
         pcst_nodes = {}
         for index, qa_row in tqdm(dataframe.iterrows()):
+            t1 = time.time()
             prompt = qa_row[1]
             query_emb = self.query_embedding_dict[qa_row[0]].numpy()[0]
             subgraph_rels = base_subgraph_rels[index]
@@ -152,6 +159,9 @@ class STaRKQADataset(InMemoryDataset):
 
             node_embedding = torch.tensor(textual_nodes_df['textEmbedding'].tolist())
 
+            textual_nodes_df['vector_similarity'] = textual_nodes_df.apply(lambda row: row['textEmbedding'] @ query_emb, axis=1)
+            textual_nodes_df = textual_nodes_df.sort_values(by=['vector_similarity'], ascending=False)
+
             textual_nodes_df.description.fillna("")
             textual_nodes_df['node_attr'] = textual_nodes_df.apply(lambda row: f"name: {row['name']}, description: {row['description']}", axis=1)
             textual_nodes_df.rename(columns={'nodeId': 'node_id'}, inplace=True)
@@ -172,7 +182,7 @@ class STaRKQADataset(InMemoryDataset):
                 desc=desc,
             )
 
-            print(f"PCST for {index} took {time.time() - t} seconds.")
+            print(f"PCST for {index} took {time.time() - t1} seconds.")
             retrieval_data.append(enriched_data)
 
         print(f"Skipped {skipped_queries} queries due to insufficient subgraph data.")
@@ -219,11 +229,7 @@ class STaRKQADataset(InMemoryDataset):
         if cypher_query == "1hop":
             res = driver.execute_query("""
                 UNWIND $nodeIds AS nodeId
-                MATCH (source:_Entity_ {nodeId:nodeId})-[rl]->{0,1}(target)
-
-                UNWIND rl as r
-                WITH DISTINCT r
-                MATCH (m)-[r]-(n)
+                MATCH (m {nodeId:nodeId})-[r]->(n)
                 RETURN
                 m.nodeId as src,
                 n.nodeId as tgt,
