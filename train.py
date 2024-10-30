@@ -63,7 +63,9 @@ def train(
     eval_batch_size,
     lr,
     llama_version,
-    dataset_version,
+    retrieval_config_version,
+    algo_config_version,
+    g_retriever_config_version,
     checkpointing=False,
 ):
     def adjust_learning_rate(param_group, LR, epoch):
@@ -98,7 +100,7 @@ def train(
             model_save_name = f'gnn-llm-{llama_version}'
 
     if model_save_name == f'llm-{llama_version}':
-        root_path = f"stark_qa_vector_rag_{dataset_version}"
+        root_path = f"stark_qa_vector_rag_{retrieval_config_version}"
         train_dataset = STaRKQAVectorSearchDataset(root_path, qa_raw_train, split="train")
         print(f'Finished loading train dataset in {time.time() - t} seconds.')
         print("Loading stark-qa prime val dataset...")
@@ -107,13 +109,13 @@ def train(
         test_dataset = STaRKQAVectorSearchDataset(root_path, qa_raw_test, split="test")
         os.makedirs(f'{root_path}/models', exist_ok=True)
     else:
-        root_path = f"stark_qa_{dataset_version}"
-        train_dataset = STaRKQADataset(root_path, qa_raw_train, split="train", dataset_version=dataset_version)
+        root_path = f"stark_qa_v{retrieval_config_version}_{algo_config_version}"
+        train_dataset = STaRKQADataset(root_path, qa_raw_train, retrieval_config_version, algo_config_version, split="train")
         print(f'Finished loading train dataset in {time.time() - t} seconds.')
         print("Loading stark-qa prime val dataset...")
-        val_dataset = STaRKQADataset(root_path, qa_raw_val, split="val", dataset_version=dataset_version)
+        val_dataset = STaRKQADataset(root_path, qa_raw_val, retrieval_config_version, algo_config_version, split="val")
         print("Loading stark-qa prime test dataset...")
-        test_dataset = STaRKQADataset(root_path, qa_raw_test, split="test", dataset_version=dataset_version)
+        test_dataset = STaRKQADataset(root_path, qa_raw_test, retrieval_config_version, algo_config_version, split="test")
         os.makedirs(f'{root_path}/models', exist_ok=True)
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size,
@@ -207,7 +209,7 @@ def train(
             print("Checkpointing best model...")
             best_val_loss = val_loss
             best_epoch = epoch
-            save_params_dict(model, f'{root_path}/models/{dataset_version}_{model_save_name}_best_val_loss_ckpt.pt')
+            save_params_dict(model, f'{root_path}/models/{retrieval_config_version}_{algo_config_version}_{g_retriever_config_version}_{model_save_name}_best_val_loss_ckpt.pt')
 
     if llm.device != "cpu":
         torch.cuda.empty_cache()
@@ -217,7 +219,7 @@ def train(
         print("Loading best checkpoint...")
         model = load_params_dict(
             model,
-            f'{root_path}/models/{dataset_version}_{model_save_name}_best_val_loss_ckpt.pt',
+            f'{root_path}/models/{retrieval_config_version}_{algo_config_version}_{g_retriever_config_version}_{model_save_name}_best_val_loss_ckpt.pt',
         )
 
     model.eval()
@@ -238,8 +240,8 @@ def train(
 
     compute_metrics(eval_output)
     print(f"Total Training Time: {time.time() - start_time:2f}s")
-    save_params_dict(model, f'{root_path}/models/{dataset_version}_{model_save_name}.pt')
-    torch.save(eval_output, f'{root_path}/models/{dataset_version}_{model_save_name}_eval_outs.pt')
+    save_params_dict(model, f'{root_path}/models/{retrieval_config_version}_{algo_config_version}_{g_retriever_config_version}_{model_save_name}.pt')
+    torch.save(eval_output, f'{root_path}/models/{retrieval_config_version}_{algo_config_version}_{g_retriever_config_version}_{model_save_name}_eval_outs.pt')
 
 
 
@@ -253,7 +255,9 @@ if __name__ == '__main__':
     parser.add_argument('--eval_batch_size', type=int, default=16)
     parser.add_argument('--checkpointing', action='store_true')
     parser.add_argument('--llama_version', type=str, required=True)
-    parser.add_argument('--dataset_version', type=str, required=True)
+    parser.add_argument('--retrieval_config_version', type=int, required=True)
+    parser.add_argument('--algo_config_version', type=int, required=True)
+    parser.add_argument('--g_retriever_config_version', type=int, required=True)
     parser.add_argument('--freeze_llm', type=bool, default=False)
     args = parser.parse_args()
     load_dotenv('db.env', override=True)
@@ -267,7 +271,9 @@ if __name__ == '__main__':
         args.eval_batch_size,
         args.lr,
         llama_version=args.llama_version,
-        dataset_version=args.dataset_version,
+        retrieval_config_version=args.retrieval_config_version,
+        algo_config_version=args.algo_config_version,
+        g_retriever_config_version=args.g_retriever_config_version,
         checkpointing=args.checkpointing,
     )
     print(f"Total Time: {time.time() - start_time:2f}s")
