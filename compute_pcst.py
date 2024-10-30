@@ -14,7 +14,7 @@ def assign_prizes_topk(
     # Assign prizes to nodes based on their similarity to the question
     top_node_count = len(top_node_ids)
     n_prizes = torch.zeros(base_subgraph_data.num_nodes)
-    n_prizes[top_node_ids] = torch.arange(top_node_count, 0, -1).float()
+    n_prizes[top_node_ids] = torch.linspace(4, 0, steps=len(top_node_ids)).float()
 
     # Assign prizes to edges based on their similarity to the question
     top_edges_count = len(top_edge_ids)

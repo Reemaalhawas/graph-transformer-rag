@@ -132,14 +132,20 @@ class STaRKQADataset(InMemoryDataset):
             tgt_consecutive = [id_map[node] for node in tgt]
             pcst_base_graph_topology = Data(edge_index=torch.tensor([src_consecutive, tgt_consecutive], dtype=torch.long))
 
-            with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
-                topn_nodes = self.get_topn_similar_nodes(query_emb, unique_nodes.tolist(), driver, pcst_config["prized_nodes"])
-            mapped_topn_node_ids = [id_map[node] for node in topn_nodes if node in id_map.keys()]
 
             if self.algo_config_version in [1]:
+                with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
+                    topn_nodes = self.get_topn_similar_nodes(query_emb, unique_nodes.tolist(), driver, pcst_config["prized_nodes"])
+                mapped_topn_node_ids = [id_map[node] for node in topn_nodes if node in id_map.keys()]
+
                 top_edges, second_top_edges = self.get_edges_by_reltype_vector_search(qa_row[0], subgraph_rels)
                 node_prizes, edge_prizes = assign_prizes_modified(pcst_base_graph_topology, mapped_topn_node_ids, top_edges, second_top_edges, pcst_config["top_edge_prize"], pcst_config["second_edge_prize"])
             else:
+                with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
+                    topn_node_ids = self.get_nodes_by_vector_search(query_emb, pcst_config["prized_nodes"], driver)
+                mapped_topn_node_ids = [id_map[node] for node in topn_node_ids if node in id_map.keys()]
+                print(f"Number of prized nodes: {len(mapped_topn_node_ids)}")
+
                 topk_edge_ids = self.get_edges_by_vector_search(qa_row[0], subgraph_rels, pcst_config["k_edges"])
                 node_prizes, edge_prizes = assign_prizes_topk(pcst_base_graph_topology, mapped_topn_node_ids, topk_edge_ids)
 
