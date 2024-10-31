@@ -133,10 +133,11 @@ class STaRKQADataset(InMemoryDataset):
             pcst_base_graph_topology = Data(edge_index=torch.tensor([src_consecutive, tgt_consecutive], dtype=torch.long))
 
 
-            if self.algo_config_version in [1]:
+            if self.algo_config_version in [42, 43]:
                 with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
                     topn_nodes = self.get_topn_similar_nodes(query_emb, unique_nodes.tolist(), driver, pcst_config["prized_nodes"])
-                mapped_topn_node_ids = [id_map[node] for node in topn_nodes if node in id_map.keys()]
+                mapped_topn_node_ids = [id_map[node] for node in topn_nodes]
+                print(f"Number of prized nodes: {len(mapped_topn_node_ids)}")
 
                 top_edges, second_top_edges = self.get_edges_by_reltype_vector_search(qa_row[0], subgraph_rels)
                 node_prizes, edge_prizes = assign_prizes_modified(pcst_base_graph_topology, mapped_topn_node_ids, top_edges, second_top_edges, pcst_config["top_edge_prize"], pcst_config["second_edge_prize"])
@@ -235,6 +236,22 @@ class STaRKQADataset(InMemoryDataset):
             res = driver.execute_query("""
                 UNWIND $nodeIds AS nodeId
                 MATCH (m {nodeId:nodeId})-[r]->(n)
+                RETURN
+                m.nodeId as src,
+                n.nodeId as tgt,
+                type(r) as relType,
+                labels(m)[0] as srcType,
+                labels(n)[0] as tgtType
+            """,
+                                       parameters_={'nodeIds': node_ids})
+
+        if cypher_query == "1hop-distinct":
+            res = driver.execute_query("""
+                UNWIND $nodeIds AS nodeId
+                MATCH (source:_Entity_ {nodeId:nodeId})-[rl]->{0,1}(target)
+                UNWIND rl as r
+                WITH DISTINCT r
+                MATCH (m)-[r]-(n)
                 RETURN
                 m.nodeId as src,
                 n.nodeId as tgt,
