@@ -64,10 +64,13 @@ def compute_intermediate_metrics(correct_nodes: dict[str, list[int]], predicted_
 def compute_metrics(eval_output, skip_invalid_hit=True):
     df = pd.concat([pd.DataFrame(d) for d in eval_output])
     all_hit = []
-    all_exact_hit = []
+    all_exact_hit_at_1 = []
+    all_exact_hit_at_5 = []
     all_exact_hit_at_any = []
     all_precision = []
     all_recall = []
+    all_recall_at_20 = []
+    all_rr = []
     all_f1 = []
     all_num_preds = []
     for pred, label in zip(df.pred.tolist(), df.label.tolist()):
@@ -87,28 +90,44 @@ def compute_metrics(eval_output, skip_invalid_hit=True):
         all_hit.append(len(hit) > 0)
 
         label = label.split('|')
-        exact_hit = 1 * (pred[0] in label)
+        exact_hit_at_1 = 1 * (pred[0] in label)
+        exact_hit_at_5 = 1 * (len(set(pred[:5]).intersection(set(label))) > 0)
         matches = set(pred).intersection(set(label))
+        matches_at_20 = len(set(pred[:20]).intersection(set(label)))
         precision = len(matches) / len(set(pred))
         recall = len(matches) / len(set(label))
+        recall_at_20 = matches_at_20 / len(set(label))
         if recall + precision == 0:
             f1 = 0
         else:
             f1 = 2 * precision * recall / (precision + recall)
 
-        all_exact_hit.append(exact_hit)
+        for i, node in enumerate(pred):
+            if node in label:
+                rr = 1 / (i + 1)
+                break
+        else:
+            rr = 0
+
+        all_exact_hit_at_1.append(exact_hit_at_1)
+        all_exact_hit_at_5.append(exact_hit_at_5)
         all_exact_hit_at_any.append(1 * (precision > 0))
         all_precision.append(precision)
         all_recall.append(recall)
+        all_recall_at_20.append(recall_at_20)
+        all_rr.append(rr)
         all_f1.append(f1)
         all_num_preds.append(len(pred))
 
     dataset_len = len(df.label.tolist())
     hit = sum(all_hit) / dataset_len
-    exact_hit = sum(all_exact_hit) / dataset_len
+    exact_hit_at_1 = sum(all_exact_hit_at_1) / dataset_len
+    exact_hit_at_5 = sum(all_exact_hit_at_5) / dataset_len
     exact_hit_at_any = sum(all_exact_hit_at_any) / dataset_len
     precision = sum(all_precision) / dataset_len
     recall = sum(all_recall) / dataset_len
+    recall_at_20 = sum(all_recall_at_20) / dataset_len
+    mrr = sum(all_rr) / dataset_len
     f1 = sum(all_f1) / dataset_len
     num_preds = sum(all_num_preds) / dataset_len
 
@@ -116,7 +135,10 @@ def compute_metrics(eval_output, skip_invalid_hit=True):
     print(f'Precision:       {precision:.4f}')
     print(f'Recall:          {recall:.4f}')
     print(f'Substring hit@1: {hit:.4f}')
-    print(f'Exact hit@1:     {exact_hit:.4f}')
+    print(f'Exact hit@1:     {exact_hit_at_1:.4f}')
+    print(f'Exact hit@5:     {exact_hit_at_5:.4f}')
     print(f'Exact hit@any:   {exact_hit_at_any:.4f}')
+    print(f'Recall@20:       {recall_at_20:.4f}')
+    print(f'MRR:             {mrr:.4f}')
     print(f'Num predictions: {num_preds:.4f}')
 
