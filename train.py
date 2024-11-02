@@ -228,7 +228,9 @@ def train(
     progress_bar_test = tqdm(range(len(test_loader)))
     for step, batch in enumerate(test_loader):
         with torch.no_grad():
+            pred_time = time.time()
             pred = inference_step(model, batch, model_save_name)
+            print(f"Time to predict: {time.time() - pred_time:2f}s")
             eval_data = {
                 'pred': pred,
                 'question': batch.question,
