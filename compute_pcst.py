@@ -30,11 +30,10 @@ def assign_prizes_modified(
     top_node_ids: List,
     top_edge_ids: np.ndarray,
     second_edge_ids: np.ndarray,
-    top_prize: float = 0.8,
-    second_prize: float = 0.5,
+    top_prize: float,
+    second_prize: float,
 ) -> tuple[torch.tensor, torch.tensor]:
     # Assign prizes to nodes based on their similarity to the question
-    interval = 4/len(top_node_ids)
     n_prizes = torch.zeros(base_subgraph_data.num_nodes)
     n_prizes[top_node_ids] = torch.linspace(4, 0, steps=len(top_node_ids)).float()
 
