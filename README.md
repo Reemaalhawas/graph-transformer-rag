@@ -39,7 +39,7 @@ In emb/prime/text-embedding-ada-002:
 - query_emb_dict.pt is query(prompt) embeddings downloaded from https://github.com/snap-stanford/stark
 
 ## Additional Neo4j GraphRAG Resources
-- For a high-level overview, have a look at [neo4j.com/genai](http://neo4j.com/genai).
+- For a high-level overview of Neo4j & GenAI, have a look at [neo4j.com/genai](http://neo4j.com/genai).
 - To learn how to get started using LLMs with Neo4j see [this online Graph Academy course](https://graphacademy.neo4j.com/courses/llm-fundamentals/) which is one of many [Neo4j-GenAI courses](https://graphacademy.neo4j.com/categories/llms/) covering multiple topics ranging from KG construction, to graph+vector search, and building GenAI chatbot applications.
 - Pick your [GenAI framework of choice](https://neo4j.com/developer/genai-ecosystem/genai-frameworks/) to start building your own GenAI applications with Neo4j.
 - Check out [Neo4j GenAI technical blogs](https://neo4j.com/developer-blog/tagged/genai/) for other worked examples and integrations.
