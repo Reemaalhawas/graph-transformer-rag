@@ -253,23 +253,6 @@ class STaRKQADataset(InMemoryDataset):
                 labels(n)[0] as tgtType
             """,
                                        parameters_={'nodeIds': node_ids})
-
-        if cypher_query == "1hop-distinct":
-            res = driver.execute_query("""
-                UNWIND $nodeIds AS nodeId
-                MATCH (source:_Entity_ {nodeId:nodeId})-[rl]->{0,1}(target)
-                UNWIND rl as r
-                WITH DISTINCT r
-                MATCH (m)-[r]-(n)
-                RETURN
-                m.nodeId as src,
-                n.nodeId as tgt,
-                type(r) as relType,
-                labels(m)[0] as srcType,
-                labels(n)[0] as tgtType
-            """,
-                                       parameters_={'nodeIds': node_ids})
-
         if cypher_query == "2path":
             res = driver.execute_query("""
             UNWIND $nodeIds AS nodeId
