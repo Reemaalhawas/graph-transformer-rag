@@ -79,7 +79,12 @@ class STaRKQADataset(InMemoryDataset):
                 t1 = time.time()
                 query_emb = self.query_embedding_dict[qa_row[0]].numpy()[0]
                 with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
-                    topk_node_ids = self.get_nodes_by_vector_search(query_emb, cypher_config["k_nodes"], driver)
+                    if self.retrieval_config_version in [0]:
+                        topk_node_ids = self.get_nodes_by_vector_search(query_emb, cypher_config['k_nodes0'], driver)[
+                                        :cypher_config['k_nodes']]
+                    else:
+                        topk_node_ids = self.get_nodes_by_vector_search(query_emb, cypher_config["k_nodes"], driver)
+
                     # Variations of cypher queries are supported here
                     subgraph_rels = self.get_subgraph_rels(topk_node_ids, cypher_config["cypher_query_type"], driver)
                     base_subgraph_rels[index] = subgraph_rels
@@ -144,6 +149,8 @@ class STaRKQADataset(InMemoryDataset):
             else:
                 with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
                     topn_node_ids = self.get_nodes_by_vector_search(query_emb, pcst_config["prized_nodes"], driver)
+                    if self.algo_config_version in [0]:
+                        topk_node_ids = self.get_nodes_by_vector_search(query_emb, pcst_config["topk_nodes"], driver)
                 mapped_topn_node_ids = [id_map[node] for node in topn_node_ids if node in id_map.keys()]
                 print(f"Number of prized nodes: {len(mapped_topn_node_ids)}")
 
@@ -155,7 +162,8 @@ class STaRKQADataset(InMemoryDataset):
 
             reverse_id_map = {v: k for k, v in id_map.items()}
             pcst_nodes_original_ids = [reverse_id_map[intermediate_id] for intermediate_id in selected_nodes]
-            pcst_nodes[index] = pcst_nodes_original_ids
+            if self.algo_config_version in [0]:
+                pcst_nodes_original_ids = list(set(topk_node_ids).union(pcst_nodes_original_ids))
 
             # Retrieve node embedding, label and textual graph description
             with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
@@ -167,6 +175,7 @@ class STaRKQADataset(InMemoryDataset):
 
             textual_nodes_df['vector_similarity'] = textual_nodes_df.apply(lambda row: row['textEmbedding'] @ query_emb, axis=1)
             textual_nodes_df = textual_nodes_df.sort_values(by=['vector_similarity'], ascending=False)
+            pcst_nodes[index] = textual_nodes_df['nodeId'].tolist()
 
             textual_nodes_df.description.fillna("")
             textual_nodes_df['node_attr'] = textual_nodes_df.apply(lambda row: f"name: {row['name']}, description: {row['description']}", axis=1)
