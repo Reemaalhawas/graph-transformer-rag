@@ -50,16 +50,16 @@ def compute_intermediate_metrics(correct_nodes: dict[str, list[int]], predicted_
                 rr = 0
             reciprocal_ranks.append(rr)
             num_guesses.append(len(predicted_nodes))
-
-    print(f"F1:              {np.mean(f1s)}")
-    print(f"Precision:       {np.mean(precisions)}")
-    print(f"Recall:          {np.mean(recalls)}")
-    print(f"Exact hit@1:     {np.mean(hits_at_1)}")
-    print(f"Exact hit@5:     {np.mean(hits_at_5)}")
-    print(f"Exact hit@any:   {np.mean(np.array(precisions) != 0)}")
-    print(f"Recall@20:       {np.mean(recalls_at_20)}")
-    print(f"MRR:             {np.mean(reciprocal_ranks)}")
-    print(f"Num predictions: {np.mean(num_guesses)}")
+    print(f"Average scoring for all questions in this split:")
+    print(f"F1:              {np.mean(f1s):.4f}")
+    print(f"Precision:       {np.mean(precisions):.4f}")
+    print(f"Recall:          {np.mean(recalls):.4f}")
+    print(f"Exact hit@1:     {np.mean(hits_at_1):.4f}")
+    print(f"Exact hit@5:     {np.mean(hits_at_5):.4f}")
+    print(f"Exact hit@any:   {np.mean(np.array(precisions) != 0):.4f}")
+    print(f"Recall@20:       {np.mean(recalls_at_20):.4f}")
+    print(f"MRR:             {np.mean(reciprocal_ranks):.4f}")
+    print(f"Num predictions: {np.mean(num_guesses):.2f}")
 
 def compute_metrics(eval_output, skip_invalid_hit=True):
     df = pd.concat([pd.DataFrame(d) for d in eval_output])
@@ -140,5 +140,5 @@ def compute_metrics(eval_output, skip_invalid_hit=True):
     print(f'Exact hit@any:   {exact_hit_at_any:.4f}')
     print(f'Recall@20:       {recall_at_20:.4f}')
     print(f'MRR:             {mrr:.4f}')
-    print(f'Num predictions: {num_preds:.4f}')
+    print(f'Num predictions: {num_preds:.2f}')
 
