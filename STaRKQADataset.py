@@ -66,24 +66,28 @@ class STaRKQADataset(InMemoryDataset):
         base_subgraph_rels = {}
         base_subgraph_folder = os.path.join(os.path.dirname(__file__), f'base_subgraphs/v{self.retrieval_config_version}/')
         base_subgraph_file = f"{base_subgraph_folder}{self.split}_data_base_subgraph.pt"
-        #topk_node_ids_file = f"{base_subgraph_folder}{self.split}_data_topk_node_ids.pt"
 
         t = time.time()
         if os.path.exists(base_subgraph_file):
             base_subgraph_rels = torch.load(base_subgraph_file)
-            #topk_node_ids = torch.load(topk_node_ids_file)
+            print(f"Loading of precomputed base subgraphs completed in {time.time() - t} seconds.")
         else:
+            print("Retrieve base subgraphs for each question...")
             subgraph_nodes = {}
             correct_nodes = {}
             for index, qa_row in tqdm(dataframe.iterrows()):
                 t1 = time.time()
                 query_emb = self.query_embedding_dict[qa_row[0]].numpy()[0]
                 with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
-                    topk_node_ids = self.get_nodes_by_vector_search(query_emb, cypher_config["k_nodes"], driver)
+                    if self.retrieval_config_version in [0]:
+                        topk_node_ids = self.get_nodes_by_vector_search(query_emb, cypher_config['k_nodes0'], driver)[
+                                        :cypher_config['k_nodes']]
+                    else:
+                        topk_node_ids = self.get_nodes_by_vector_search(query_emb, cypher_config["k_nodes"], driver)
+
                     # Variations of cypher queries are supported here
                     subgraph_rels = self.get_subgraph_rels(topk_node_ids, cypher_config["cypher_query_type"], driver)
                     base_subgraph_rels[index] = subgraph_rels
-                print(f"Cypher query retrieval for {index} took {time.time() - t1} seconds.")
 
                 correct_ids = eval(qa_row[2])
                 correct_nodes[index] = correct_ids
@@ -94,11 +98,10 @@ class STaRKQADataset(InMemoryDataset):
 
             os.makedirs(base_subgraph_folder, exist_ok=True)
             torch.save(base_subgraph_rels, base_subgraph_file)
-            #torch.save(topk_node_ids, topk_node_ids_file)
             compute_intermediate_metrics(correct_nodes, subgraph_nodes)
-        print(f"All cypher query retrieval completed in {time.time() - t} seconds.")
+            print(f"All cypher query retrieval completed in {time.time() - t} seconds.")
 
-
+        print(f"Compute PCST graphs...")
         # PCST subgraph pruning
         with open(f"configs/algo_config_v{self.algo_config_version}.yaml", "r") as f:
             pcst_config = yaml.safe_load(f)
@@ -107,7 +110,6 @@ class STaRKQADataset(InMemoryDataset):
         correct_nodes = {}
         pcst_nodes = {}
         for index, qa_row in tqdm(dataframe.iterrows()):
-            t1 = time.time()
             prompt = qa_row[1]
             query_emb = self.query_embedding_dict[qa_row[0]].numpy()[0]
             subgraph_rels = base_subgraph_rels[index]
@@ -132,20 +134,19 @@ class STaRKQADataset(InMemoryDataset):
             tgt_consecutive = [id_map[node] for node in tgt]
             pcst_base_graph_topology = Data(edge_index=torch.tensor([src_consecutive, tgt_consecutive], dtype=torch.long))
 
-
             if self.algo_config_version in [42, 43]:
                 with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
                     topn_nodes = self.get_topn_similar_nodes(query_emb, unique_nodes.tolist(), driver, pcst_config["prized_nodes"])
                 mapped_topn_node_ids = [id_map[node] for node in topn_nodes]
-                print(f"Number of prized nodes: {len(mapped_topn_node_ids)}")
 
                 top_edges, second_top_edges = self.get_edges_by_reltype_vector_search(qa_row[0], subgraph_rels)
                 node_prizes, edge_prizes = assign_prizes_modified(pcst_base_graph_topology, mapped_topn_node_ids, top_edges, second_top_edges, pcst_config["top_edge_prize"], pcst_config["second_edge_prize"])
             else:
                 with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
                     topn_node_ids = self.get_nodes_by_vector_search(query_emb, pcst_config["prized_nodes"], driver)
+                    if self.algo_config_version in [0]:
+                        topk_node_ids = self.get_nodes_by_vector_search(query_emb, pcst_config["topk_nodes"], driver)
                 mapped_topn_node_ids = [id_map[node] for node in topn_node_ids if node in id_map.keys()]
-                print(f"Number of prized nodes: {len(mapped_topn_node_ids)}")
 
                 topk_edge_ids = self.get_edges_by_vector_search(qa_row[0], subgraph_rels, pcst_config["k_edges"])
                 node_prizes, edge_prizes = assign_prizes_topk(pcst_base_graph_topology, mapped_topn_node_ids, topk_edge_ids)
@@ -155,18 +156,22 @@ class STaRKQADataset(InMemoryDataset):
 
             reverse_id_map = {v: k for k, v in id_map.items()}
             pcst_nodes_original_ids = [reverse_id_map[intermediate_id] for intermediate_id in selected_nodes]
-            pcst_nodes[index] = pcst_nodes_original_ids
+            if self.algo_config_version in [0]:
+                pcst_nodes_original_ids = list(set(topk_node_ids).union(pcst_nodes_original_ids))
 
+            original_edges = [(reverse_id_map[src.item()], reverse_id_map[tgt.item()]) for src, tgt in selected_edges.t()]
+            answer_ids = eval(qa_row[2])
             # Retrieve node embedding, label and textual graph description
             with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
                 textual_nodes_df = self.get_textual_nodes(pcst_nodes_original_ids, driver)
-                original_edges = [(reverse_id_map[src.item()], reverse_id_map[tgt.item()]) for src, tgt in selected_edges.t()]
                 textual_edges_df = self.get_textual_edges(original_edges, driver)
+                answers = self.get_textual_nodes(answer_ids, driver)['name'].tolist()
 
             node_embedding = torch.tensor(textual_nodes_df['textEmbedding'].tolist())
 
             textual_nodes_df['vector_similarity'] = textual_nodes_df.apply(lambda row: row['textEmbedding'] @ query_emb, axis=1)
             textual_nodes_df = textual_nodes_df.sort_values(by=['vector_similarity'], ascending=False)
+            pcst_nodes[index] = textual_nodes_df['nodeId'].tolist()
 
             textual_nodes_df.description.fillna("")
             textual_nodes_df['node_attr'] = textual_nodes_df.apply(lambda row: f"name: {row['name']}, description: {row['description']}", axis=1)
@@ -174,10 +179,6 @@ class STaRKQADataset(InMemoryDataset):
             nodes_desc = textual_nodes_df.drop(['name', 'description', 'textEmbedding'], axis=1).to_csv(index=False)
             edges_desc = textual_edges_df.to_csv(index=False)
             desc = nodes_desc + '\n' + edges_desc
-
-            answer_ids = eval(qa_row[2])
-            with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
-                answers = self.get_textual_nodes(answer_ids, driver)['name'].tolist()
 
             enriched_data = Data(
                 x=node_embedding,
@@ -187,8 +188,6 @@ class STaRKQADataset(InMemoryDataset):
                 label=('|').join(answers).lower(),
                 desc=desc,
             )
-
-            print(f"PCST for {index} took {time.time() - t1} seconds.")
             retrieval_data.append(enriched_data)
 
         print(f"Skipped {skipped_queries} queries due to insufficient subgraph data.")
@@ -244,23 +243,6 @@ class STaRKQADataset(InMemoryDataset):
                 labels(n)[0] as tgtType
             """,
                                        parameters_={'nodeIds': node_ids})
-
-        if cypher_query == "1hop-distinct":
-            res = driver.execute_query("""
-                UNWIND $nodeIds AS nodeId
-                MATCH (source:_Entity_ {nodeId:nodeId})-[rl]->{0,1}(target)
-                UNWIND rl as r
-                WITH DISTINCT r
-                MATCH (m)-[r]-(n)
-                RETURN
-                m.nodeId as src,
-                n.nodeId as tgt,
-                type(r) as relType,
-                labels(m)[0] as srcType,
-                labels(n)[0] as tgtType
-            """,
-                                       parameters_={'nodeIds': node_ids})
-
         if cypher_query == "2path":
             res = driver.execute_query("""
             UNWIND $nodeIds AS nodeId
