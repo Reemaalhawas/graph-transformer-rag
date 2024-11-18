@@ -12,31 +12,26 @@ This repo contains experiments for combining Knowledge Graph Retrieval with GNN+
 - General, extensible 2-part architecture: KG Retrieval & GNN+LLM.
 - Efficient, stable inference time and output for real-world use cases.
 
-## Installing Neo4j GenAI plugin
-Copy over from plugins to products according to Neo4j guide.
+## Installation
+### The database & dataset
+Install the Neo4j database (and relevant JDK) by following [official instructions](https://neo4j.com/docs/operations-manual/current/installation/linux/debian/#debian-installation).
+You'll also need the Neo4j [GenAI plugin](https://neo4j.com/docs/cypher-manual/current/genai-integrations/#_installation).
 
+With the database installed and running, you can load the STaRK-Prime dataset by running the python notebook in `data-loading/stark_prime_neo4j_loading.ipynb`.
+Alternatively, obtain a database dump at [AWS S3](`s3://gds-public-dataset/stark-prime-neo4j523`) for database version 5.23.
 
-## Installing LlamaTokenizer that's required by PyG GRetriever
-
-LlamaTokenizer requires the SentencePiece library but it was not found in your environment. Checkout the instructions on the
-installation page of its repo: https://github.com/google/sentencepiece#installation and follow the ones
-that match your environment. Please note that you may need to restart your runtime after installation.
+### Other requirements
+Install all required libraries in `requirements.txt`.
+Additionally, make sure huggingface-cli authentications are set up for using relevant (Llama2, Llama3) models.
 
 
 ## Reproduce results
-1. G-retriever:
+1. To train a model with default configurations to reproduce results, run the following command:
 `python train.py --checkpointing --llama_version llama3.1-8b --retrieval_config_version 0 --algo_config_version 0 --g_retriever_config_version 0 --eval_batch_size 4`
-2. Pipeline:
-Run `eval_pcst_ordering.ipynb` with Neo4j DB.
+2. We reproduce result for Pipline, run `eval_pcst_ordering.ipynb` on using the intermediate dataset and g-retriever model.
    
 ![Table Description](finalmetric.png)
 
-
-In DB:
-- SKB graph with node embeddings from candidate_emb_dict.pt, downloaded from https://github.com/snap-stanford/stark
-In emb/prime/text-embedding-ada-002:
-- reltype_emb_dict.pt is reltype embeddings generated ourselves using openAI text-embedding-ada-002 (18 relTypes)
-- query_emb_dict.pt is query(prompt) embeddings downloaded from https://github.com/snap-stanford/stark
 
 ## Additional Neo4j GraphRAG Resources
 - For a high-level overview of Neo4j & GenAI, have a look at [neo4j.com/genai](http://neo4j.com/genai).
