@@ -1,4 +1,3 @@
-edge_embedding_method: "triplet"
+edge_embedding_method: "none"
 prized_nodes: 100
-k_edges: 4
 topk_nodes: 25
