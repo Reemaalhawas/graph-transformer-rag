@@ -1,10 +1,8 @@
 import argparse
 import math
 import os
-import re
 import time
 
-import pandas as pd
 import torch
 from dotenv import load_dotenv
 from torch_geometric.loader import DataLoader
@@ -19,7 +17,7 @@ from tqdm import tqdm
 
 from compute_metrics import compute_metrics
 
-from STaRKQADataset import STaRKQADataset
+from STaRKQADatasetGDS import STaRKQADataset
 from STaRKQAVectorSearchDataset import STaRKQAVectorSearchDataset
 
 def get_loss(model, batch, model_save_name) -> Tensor:
@@ -48,9 +46,9 @@ def save_params_dict(model, save_path):
             del state_dict[k]  # Delete parameters that do not require gradient
     torch.save(state_dict, save_path)
 
-
 def load_params_dict(model, save_path):
-    state_dict = torch.load(save_path)
+    state_dict = model.state_dict()
+    state_dict.update(torch.load(save_path)) #All weights might not be saved, eg when using LoRA.
     model.load_state_dict(state_dict)
     return model
 
@@ -211,7 +209,7 @@ def train(
             best_epoch = epoch
             save_params_dict(model, f'{root_path}/models/{retrieval_config_version}_{algo_config_version}_{g_retriever_config_version}_{model_save_name}_best_val_loss_ckpt.pt')
 
-    if llm.device != "cpu":
+    if llm.device.type != "cpu":
         torch.cuda.empty_cache()
         torch.cuda.reset_max_memory_allocated()
 

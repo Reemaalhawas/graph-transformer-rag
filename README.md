@@ -26,9 +26,11 @@ Additionally, make sure huggingface-cli authentications are set up for using rel
 
 
 ## Reproduce results
-1. To train a model with default configurations to reproduce results, run the following command:
+1. To train a model with default configurations, run the following command:
 `python train.py --checkpointing --llama_version llama3.1-8b --retrieval_config_version 0 --algo_config_version 0 --g_retriever_config_version 0 --eval_batch_size 4`
-2. We reproduce result for Pipline, run `eval_pcst_ordering.ipynb` on using the intermediate dataset and g-retriever model.
+2. To get result for Pipline, run `eval_pcst_ordering.ipynb` on using the intermediate dataset and g-retriever model.
+3. To exactly reproduce results in the below table, use the `stanford-workshop-2024` branch. 
+The `main` branch contains new incremental changes and improvements.
    
 ![Table Description](finalmetric.png)
 
