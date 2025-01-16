@@ -209,7 +209,7 @@ def train(
             best_epoch = epoch
             save_params_dict(model, f'{root_path}/models/{retrieval_config_version}_{algo_config_version}_{g_retriever_config_version}_{model_save_name}_best_val_loss_ckpt.pt')
 
-    if llm.device != "cpu":
+    if llm.device.type != "cpu":
         torch.cuda.empty_cache()
         torch.cuda.reset_max_memory_allocated()
 
