@@ -4,6 +4,10 @@ __Knowledge graph retrieval to improve multi-hop Q&A performance, optimized with
 
 This repo contains experiments for combining Knowledge Graph Retrieval with GNN+LLM models to improve RAG.  Currently leveraging [Neo4j](https://neo4j.com/generativeai/), [G-Retriever](https://arxiv.org/abs/2402.07630), and the [STaRK-Prime dataset](https://stark.stanford.edu/dataset_prime.html) for benchmarking. 
 
+This work was presented at: 
+stanford graph learning workshop 2024: https://snap.stanford.edu/graphlearning-workshop-2024/
+nvidia technical blog: https://developer.nvidia.com/blog/boosting-qa-accuracy-with-graphrag-using-pyg-and-graph-databases/
+
 ## Architecture Overview
 
 ![Architecture](architecture.png)
@@ -15,10 +19,10 @@ This repo contains experiments for combining Knowledge Graph Retrieval with GNN+
 ## Installation
 ### The database & dataset
 Install the Neo4j database (and relevant JDK) by following [official instructions](https://neo4j.com/docs/operations-manual/current/installation/linux/debian/#debian-installation).
-You'll also need the Neo4j [GenAI plugin](https://neo4j.com/docs/cypher-manual/current/genai-integrations/#_installation).
+You'll also need the Neo4j [GenAI plugin](https://neo4j.com/docs/cypher-manual/current/genai-integrations/#_installation) and the Neo4j [Graph Data Science library](https://neo4j.com/docs/graph-data-science/current/installation/).
 
 With the database installed and running, you can load the STaRK-Prime dataset by running the python notebook in `data-loading/stark_prime_neo4j_loading.ipynb`.
-Alternatively, obtain a database dump at [AWS S3](`s3://gds-public-dataset/stark-prime-neo4j523`) for database version 5.23.
+Alternatively, obtain a database dump at AWS S3 (bucket at gds-public-dataset/stark-prime-neo4j523) for database version 5.23.
 
 ### Other requirements
 Install all required libraries in `requirements.txt`.
