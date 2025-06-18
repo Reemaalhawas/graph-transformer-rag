@@ -26,6 +26,7 @@ Alternatively, obtain a database dump at AWS S3 (bucket at gds-public-dataset/st
 
 ### Other requirements
 Install all required libraries in `requirements.txt`.
+Populate `db.env` file with your local Neo4j URI and username and password.
 Additionally, make sure huggingface-cli authentications are set up for using relevant (Llama2, Llama3) models.
 
 
