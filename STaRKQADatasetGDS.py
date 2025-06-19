@@ -108,6 +108,9 @@ class STaRKQADataset(InMemoryDataset):
         return [self.split + '_data.pt']
 
     def process(self) -> None:
+        if not os.path.isfile('db.env'):
+            print(f"Expected file 'db.env' was not found.")
+
         load_dotenv('db.env', override=True)
         NEO4J_URI = os.getenv('NEO4J_URI')
         NEO4J_USERNAME = os.getenv('NEO4J_USERNAME')
@@ -127,7 +130,7 @@ class STaRKQADataset(InMemoryDataset):
 
         if os.path.exists(base_subgraph_file):
             print(f"Load precomputed base subgraphs from disk...")
-            base_subgraph = torch.load(base_subgraph_file)
+            base_subgraph = torch.load(base_subgraph_file, weights_only=False)
         else:
             print("Retrieve base subgraphs for each question...")
             base_subgraph = {}

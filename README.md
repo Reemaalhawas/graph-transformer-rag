@@ -25,7 +25,7 @@ With the database installed and running, you can load the STaRK-Prime dataset by
 Alternatively, obtain a database dump at AWS S3 (bucket at gds-public-dataset/stark-prime-neo4j523) for database version 5.23.
 
 ### Other requirements
-Install all required libraries in `requirements.txt`.
+Install all required libraries in `requirements.txt`. They should be compatible with Python 3.11.
 Populate `db.env` file with your local Neo4j URI and username and password.
 Additionally, make sure huggingface-cli authentications are set up for using relevant (Llama2, Llama3) models.
 

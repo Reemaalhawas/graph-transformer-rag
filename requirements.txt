@@ -7,3 +7,4 @@ sentencepiece == 0.2.0
 protobuf == 5.28.2
 accelerate == 0.34.2
 graphdatascience == 1.13.0
+huggingface_hub
