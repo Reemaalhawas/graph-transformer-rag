@@ -65,7 +65,7 @@ def train(
     algo_config_version,
     g_retriever_config_version,
     checkpointing=False,
-    sys_prompt=None
+    sys_prompt
 ):
     def adjust_learning_rate(param_group, LR, epoch):
         # Decay the learning rate with half-cycle cosine after warmup
@@ -279,7 +279,6 @@ if __name__ == '__main__':
     )
     parser.add_argument('--sys_prompt', type=str, default=default_llm_prompt)
     args = parser.parse_args()
-    breakpoint()
     load_dotenv('db.env', override=True)
 
     start_time = time.time()
