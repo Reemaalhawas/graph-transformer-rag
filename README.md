@@ -77,8 +77,12 @@ __Alternatives__:
 - Run the notebook as a script
 
 ```bash
+python load_data.py
+```
+
+This was done by converting the notebook into a script.
+```bash
 jupyter nbconvert --to script stark_prime_neo4j_loading.ipynb
-python <script>.py
 ```
 
 - Obtain a database dump at AWS S3 (bucket at gds-public-dataset/stark-prime-neo4j523) for database version 5.23.
