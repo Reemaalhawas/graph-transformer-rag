@@ -140,7 +140,7 @@ def train(
 	}
 
     print("=====")
-    print(common_args)
+    print(f"common_args: {common_args}")
     print("=====")
 
     if llama_version == 'tiny_llama':
@@ -285,12 +285,12 @@ if __name__ == '__main__':
     parser.add_argument('--g_retriever_config_version', type=int, required=True)
     parser.add_argument('--freeze_llm', type=bool, default=False)
     default_llm_prompt = (
-        "You are an expert assistant that can answer "
-        "any question from its knowledge, given an extracted subgraph and the textual description of the nodes"
+        "You are an expert assistant that can answer any question from its knowledge, "
+        "given an extracted subgraph and the textual description of the nodes"
         "it's textualized context. Just give the answer, without explanation."
     )
     parser.add_argument('--sys_prompt', type=str, default=default_llm_prompt)
-    parser.add_argument('--num-gpus', type=int, default=None)
+    parser.add_argument('--num_gpus', type=int, default=4)
     args = parser.parse_args()
     load_dotenv('db.env', override=True)
 
