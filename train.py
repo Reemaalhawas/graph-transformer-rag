@@ -24,6 +24,7 @@ def get_loss(model, batch, model_save_name) -> Tensor:
     if model_save_name.startswith('llm'):
         return model(batch.question, batch.label, batch.desc)
     else:
+        # calls forward for GRetriever
         return model(batch.question, batch.x, batch.edge_index, batch.batch,
                      batch.label, batch.edge_attr, batch.desc)
 
@@ -64,7 +65,8 @@ def train(
     algo_config_version,
     g_retriever_config_version,
     checkpointing=False,
-    sys_prompt
+    sys_prompt=None,
+    num_gpus=None
 ):
     def adjust_learning_rate(param_group, LR, epoch):
         # Decay the learning rate with half-cycle cosine after warmup
@@ -130,24 +132,34 @@ def train(
         num_layers=num_gnn_layers,
         heads=4,
     )
+	
+
+    common_args = {
+        'sys_prompt': sys_prompt,
+        'n_gpus': num_gpus	
+	}
+
+    print("=====")
+    print(common_args)
+    print("=====")
 
     if llama_version == 'tiny_llama':
         llm = LLM(
             model_name='TinyLlama/TinyLlama-1.1B-Chat-v0.1',
             num_params=1,
-            sys_prompt=sys_prompt
+			**common_args
         )
     elif llama_version == 'llama2-7b':
         llm = LLM(
             model_name='meta-llama/Llama-2-7b-chat-hf',
             num_params=7,
-            sys_prompt=sys_prompt
+			**common_args
         )
     elif llama_version == 'llama3.1-8b':
         llm = LLM(
             model_name='meta-llama/Llama-3.1-8B-Instruct',
             num_params=8,
-            sys_prompt=sys_prompt
+			**common_args
         )
 
 
@@ -189,6 +201,7 @@ def train(
 
         for step, batch in enumerate(loader):
             optimizer.zero_grad()
+            # first call to get_loss
             loss = get_loss(model, batch, model_save_name)
             loss.backward()
 
@@ -273,10 +286,11 @@ if __name__ == '__main__':
     parser.add_argument('--freeze_llm', type=bool, default=False)
     default_llm_prompt = (
         "You are an expert assistant that can answer "
-        "any question from its knowledge, given a knowledge graph embedding and "
+        "any question from its knowledge, given an extracted subgraph and the textual description of the nodes"
         "it's textualized context. Just give the answer, without explanation."
     )
     parser.add_argument('--sys_prompt', type=str, default=default_llm_prompt)
+    parser.add_argument('--num-gpus', type=int, default=None)
     args = parser.parse_args()
     load_dotenv('db.env', override=True)
 
@@ -293,7 +307,8 @@ if __name__ == '__main__':
         algo_config_version=args.algo_config_version,
         g_retriever_config_version=args.g_retriever_config_version,
         checkpointing=args.checkpointing,
-        sys_prompt=args.sys_prompt
+        sys_prompt=args.sys_prompt,
+        num_gpus=args.num_gpus
     )
     print(f"Total Time: {time.time() - start_time:2f}s")
 
