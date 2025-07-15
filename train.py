@@ -266,7 +266,6 @@ def train(
     torch.save(eval_output, f'{root_path}/models/{retrieval_config_version}_{algo_config_version}_{g_retriever_config_version}_{model_save_name}_eval_outs.pt')
 
 
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--gnn_hidden_channels', type=int, default=1536)
@@ -283,8 +282,8 @@ if __name__ == '__main__':
     parser.add_argument('--freeze_llm', type=bool, default=False)
     default_llm_prompt = (
         "You are an expert assistant that can answer any question from its knowledge, "
-        "given an extracted subgraph and the textual description of the nodes"
-        "it's textualized context. Just give the answer, without explanation."
+        "given an extracted subgraph and the textual description of the nodes and "
+        "its textualized context. Just give the answer, without explanation."
     )
     parser.add_argument('--sys_prompt', type=str, default=default_llm_prompt)
     parser.add_argument('--num_gpus', type=int, default=4)
