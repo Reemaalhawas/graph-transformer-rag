@@ -49,9 +49,25 @@ echo "Location of Python: $(which python) and version $(python --version)"
 popd
 
 #######
-# Step 3: Get dependencies
-# in neo4j-benchmark repo run 
+# Step 3: Get dependencies and load data
+# in neo4j-benchmark repo directory 
 pip install -r requirements.txt
 pushd data-loading
 python emb_download.py --dataset prime --emb_dir emb/
 python load_data.py
+popd
+
+######
+# Step 4: Run benchmark
+# Make sure you have the correct PyG branch installed in your environment
+set -x
+python train.py \
+    --checkpointing \
+    --llama_version llama3.1-8b \
+    --retrieval_config_version 0 \
+    --algo_config_version 0 \
+    --g_retriever_config_version 0 \
+    --eval_batch_size 4 \
+    --num_gpus 8 \
+    2>&1 | tee result.out
+set +x
