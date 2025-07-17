@@ -133,30 +133,17 @@ def train(
         heads=4,
     )
     
-
-    common_args = {
-        'sys_prompt': sys_prompt,
-        'n_gpus': num_gpus	
-    }
-
-    print("=====")
-    print(f"common_args: {common_args}")
-    print("=====")
-
     if llama_version == 'tiny_llama':
         llm = LLM(
             model_name='TinyLlama/TinyLlama-1.1B-Chat-v0.1',
-            **common_args
         )
     elif llama_version == 'llama2-7b':
         llm = LLM(
             model_name='meta-llama/Llama-2-7b-chat-hf',
-            **common_args
         )
     elif llama_version == 'llama3.1-8b':
         llm = LLM(
             model_name='meta-llama/Llama-3.1-8B-Instruct',
-            **common_args
         )
 
 
@@ -198,7 +185,6 @@ def train(
 
         for step, batch in enumerate(loader):
             optimizer.zero_grad()
-            # first call to get_loss
             loss = get_loss(model, batch, model_save_name)
             loss.backward()
 
@@ -280,13 +266,6 @@ if __name__ == '__main__':
     parser.add_argument('--algo_config_version', type=int, required=True)
     parser.add_argument('--g_retriever_config_version', type=int, required=True)
     parser.add_argument('--freeze_llm', type=bool, default=False)
-    default_llm_prompt = (
-        "You are an expert assistant that can answer any question from its knowledge, "
-        "given an extracted subgraph and the textual description of the nodes and "
-        "its textualized context. Just give the answer, without explanation."
-    )
-    parser.add_argument('--sys_prompt', type=str, default=default_llm_prompt)
-    parser.add_argument('--num_gpus', type=int, default=4)
     args = parser.parse_args()
     load_dotenv('db.env', override=True)
 
