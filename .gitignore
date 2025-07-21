@@ -1,4 +1,3 @@
-*.env
 scratch/
 .DS_Store
 .idea/
