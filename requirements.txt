@@ -1,4 +1,3 @@
-stark-qa == 0.1.2
 neo4j == 5.28.1
 python-dotenv == 1.1.1
 pcst_fast == 1.0.10
