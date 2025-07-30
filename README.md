@@ -17,15 +17,82 @@ nvidia technical blog: https://developer.nvidia.com/blog/boosting-qa-accuracy-wi
 - Efficient, stable inference time and output for real-world use cases.
 
 ## Installation
-### The database & dataset
+
+### Installing Neo4J
+
 Install the Neo4j database (and relevant JDK) by following [official instructions](https://neo4j.com/docs/operations-manual/current/installation/linux/debian/#debian-installation).
-You'll also need the Neo4j [GenAI plugin](https://neo4j.com/docs/cypher-manual/current/genai-integrations/#_installation) and the Neo4j [Graph Data Science library](https://neo4j.com/docs/graph-data-science/current/installation/).
+
+Once installed, you can verify the installation version 
+
+```bash
+neo4j --version
+```
+
+Then start your Neo4J instance via
+
+```bash
+neo4j start
+```
+```
+Directories in use:
+home:         /var/lib/neo4j
+config:       /etc/neo4j             <-- location of config file
+logs:         /var/log/neo4j
+plugins:      /var/lib/neo4j/plugins <-- location of plugins in neo4j home
+import:       /var/lib/neo4j/import
+data:         /var/lib/neo4j/data
+certificates: /var/lib/neo4j/certificates
+licenses:     /var/lib/neo4j/licenses
+run:          /var/lib/neo4j/run
+Starting Neo4j.
+```
+
+From this output, you can see information about where Neo4J has been installed:
+
+### Installing Additional Plugins
+
+You'll also need to install the following:
+ - [GenAI plugin](https://neo4j.com/docs/cypher-manual/current/genai-integrations/#_installation)
+ - [Graph Data Science library](https://neo4j.com/docs/graph-data-science/current/installation/)
+
+This can be done by moving the `<plugin>.jar` files from the `products/` directory into the `plugins/` directory in your Neo4J home. Also add the following line
+
+```
+dbms.security.procedures.allowlist=gds.*
+```
+
+To the bottom of your Neo4J config file (`/etc/neo4j/neo4j.conf`) and restart Neo4J.
+
+```bash
+neo4j restart
+```
+
+
+### The database & dataset
 
 With the database installed and running, you can load the STaRK-Prime dataset by running the python notebook in `data-loading/stark_prime_neo4j_loading.ipynb`.
-Alternatively, obtain a database dump at AWS S3 (bucket at gds-public-dataset/stark-prime-neo4j523) for database version 5.23.
+
+__Alternatives__:
+
+- Run the notebook as a script
+
+```bash
+python load_data.py
+```
+
+This was done by converting the notebook into a script.
+```bash
+jupyter nbconvert --to script stark_prime_neo4j_loading.ipynb
+```
+
+- Obtain a database dump at AWS S3 (bucket at gds-public-dataset/stark-prime-neo4j523) for database version 5.23.
 
 ### Other requirements
-Install all required libraries in `requirements.txt`. They should be compatible with Python 3.11.
+
+Install all required libraries in `requirements.txt` with `pip install -r requirements.txt`.
+
+They should be compatible with Python 3.11.
+
 Populate `db.env` file with your local Neo4j URI and username and password.
 Additionally, make sure huggingface-cli authentications are set up for using relevant (Llama2, Llama3) models.
 

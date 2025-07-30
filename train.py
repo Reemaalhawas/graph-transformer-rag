@@ -24,6 +24,7 @@ def get_loss(model, batch, model_save_name) -> Tensor:
     if model_save_name.startswith('llm'):
         return model(batch.question, batch.label, batch.desc)
     else:
+        # calls forward for GRetriever
         return model(batch.question, batch.x, batch.edge_index, batch.batch,
                      batch.label, batch.edge_attr, batch.desc)
 
@@ -65,6 +66,8 @@ def train(
     algo_config_version,
     g_retriever_config_version,
     checkpointing=False,
+    sys_prompt=None,
+    num_gpus=None
 ):
     def adjust_learning_rate(param_group, LR, epoch):
         # Decay the learning rate with half-cycle cosine after warmup
@@ -132,11 +135,17 @@ def train(
     )
 
     if llama_version == 'tiny_llama':
-        llm = LLM(model_name='TinyLlama/TinyLlama-1.1B-Chat-v0.1', num_params=1)
+        llm = LLM(
+            model_name='TinyLlama/TinyLlama-1.1B-Chat-v0.1',
+        )
     elif llama_version == 'llama2-7b':
-        llm = LLM(model_name='meta-llama/Llama-2-7b-chat-hf', num_params=7)
+        llm = LLM(
+            model_name='meta-llama/Llama-2-7b-chat-hf',
+        )
     elif llama_version == 'llama3.1-8b':
-        llm = LLM(model_name='meta-llama/Llama-3.1-8B-Instruct', num_params=8)
+        llm = LLM(
+            model_name='meta-llama/Llama-3.1-8B-Instruct',
+        )
 
 
     if args.freeze_llm:
@@ -244,7 +253,6 @@ def train(
     torch.save(eval_output, f'{root_path}/models/{retrieval_config_version}_{algo_config_version}_{g_retriever_config_version}_{model_save_name}_eval_outs.pt')
 
 
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--gnn_hidden_channels', type=int, default=1536)
@@ -275,5 +283,8 @@ if __name__ == '__main__':
         algo_config_version=args.algo_config_version,
         g_retriever_config_version=args.g_retriever_config_version,
         checkpointing=args.checkpointing,
+        sys_prompt=args.sys_prompt,
+        num_gpus=args.num_gpus
     )
     print(f"Total Time: {time.time() - start_time:2f}s")
+
