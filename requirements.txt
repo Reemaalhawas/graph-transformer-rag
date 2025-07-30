@@ -1,3 +1,4 @@
+stark-qa
 neo4j == 5.28.1
 python-dotenv == 1.1.1
 pcst_fast == 1.0.10
@@ -5,3 +6,4 @@ langchain-openai == 0.3.28
 sentencepiece == 0.2.0
 protobuf == 6.31.1
 accelerate == 1.8.1
+graphdatascience == 1.13.0
