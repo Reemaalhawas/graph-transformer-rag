@@ -7,3 +7,5 @@ transformers=4.57.1
 pandas=2.3.3
 torchmetrics=1.8.2
 pcst_fast=1.0.10
+neo4j==6.0.2
+dotenv==0.9.9
