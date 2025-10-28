@@ -11,6 +11,9 @@ from itertools import chain
 from pathlib import Path
 
 import yaml
+from neo4j import GraphDatabase
+from dotenv import load_dotenv
+import os
 
 try:
     import wandb
@@ -424,6 +427,31 @@ def update_data_lists(args, data_lists):
     return data_lists
 
 
+def load_triples_from_neo4j(neo4j_connection):
+    driver = GraphDatabase.driver(
+        neo4j_connection['uri'],
+        auth=(neo4j_connection['username'], neo4j_connection['password']),
+        database=neo4j_connection.get('database')
+    )
+    
+    try:
+        with driver.session() as session:
+            query = """
+            MATCH (n)-[r]->(m) 
+            RETURN n.entity_name as subject, type(r) as predicate, m.entity_name as object
+            """
+            
+            result = session.run(query)
+            triples = [(record['subject'], record['predicate'], record['object']) 
+                      for record in result]
+            
+            print(f"Successfully loaded {len(triples):,} triples from Neo4j")
+            return triples
+            
+    finally:
+        driver.close()
+
+
 def make_dataset(args):
     qa_pairs, context_docs = get_data(args)
     print("Number of Docs in our VectorDB =", len(context_docs))
@@ -443,6 +471,16 @@ def make_dataset(args):
 
         print(f" -> Saved triples generated with: {stored_model_name}")
         triples = torch.load(raw_triples_file)
+    if os.path.exists('lecture_corpus.env'):
+        load_dotenv('lecture_corpus.env', override=True)
+        neo4j_connection = {
+            'uri': os.getenv('NEO4J_URI'),
+            'database': os.getenv('NEO4J_DATABASE'),
+            'username': os.getenv('NEO4J_USERNAME'),
+            'password': os.getenv('NEO4J_PASSWORD')
+        }
+        
+        triples = load_triples_from_neo4j(neo4j_connection)
     else:
         triples = index_kg(args, context_docs)
 
