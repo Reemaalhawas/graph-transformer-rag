@@ -40,7 +40,7 @@ A fragment of the generated lecture corpus KG looks like:
 
 
 ### Running the script
-`python txt2kg_rag.py --NV_NIM_KEY=$YOUR_KEY --ENDPOINT_URL=http://0.0.0.0:8000/v1 --NV_NIM_MODEL nvidia/Llama-3.1-Nemotron-Nano-4B-v1.1 —use_x_percent_corpus=0.1 --llm_generator_name=meta-llama/Llama-3.2-1B-Instruct`
+`python txt2kg_rag.py --NV_NIM_KEY=$YOUR_KEY --ENDPOINT_URL=http://0.0.0.0:8000/v1 --NV_NIM_MODEL nvidia/Llama-3.1-Nemotron-Nano-4B-v1.1 —-use_x_percent_corpus=0.1 --llm_generator_name=meta-llama/Llama-3.2-1B-Instruct`
 
 Make sure to set `—use_x_percent_corpus` and `--llm_generator_name` for proof-of-concept using a small fraction of the dataset and a small model.
 The entire end-to-end pipeline for PoC with these configurations takes about ~3h on a single A100 40G GPU.

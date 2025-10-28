@@ -22,7 +22,7 @@ except ImportError:
     wandb_available = False
 
 import torch
-from g_retriever import (
+from txt2kg_rag_utils import (
     adjust_learning_rate,
     get_loss,
     inference_step,
@@ -477,17 +477,27 @@ def make_dataset(args):
     data_lists = {"train": [], "validation": [], "test": []}
 
     triples = []
-    if os.path.exists('lecture_corpus.env'):
-        load_dotenv('lecture_corpus.env', override=True)
-        neo4j_connection = {
-            'uri': os.getenv('NEO4J_URI'),
-            'database': os.getenv('NEO4J_DATABASE'),
-            'username': os.getenv('NEO4J_USERNAME'),
-            'password': os.getenv('NEO4J_PASSWORD')
-        }
-        
+    load_dotenv('lecture_corpus.env', override=True)
+    neo4j_connection = {
+        'uri': os.getenv('NEO4J_URI'),
+        'database': os.getenv('NEO4J_DATABASE'),
+        'username': os.getenv('NEO4J_USERNAME'),
+        'password': os.getenv('NEO4J_PASSWORD')
+    }
+    # I want to check if there data in the DB
+    driver = GraphDatabase.driver(
+        neo4j_connection['uri'],
+        auth=(neo4j_connection['username'], neo4j_connection['password']),
+        database=neo4j_connection.get('database')
+    )
+    with driver.session() as session:
+        result = session.run("MATCH (n) RETURN count(n) as count")
+        count = result.single()['count']
+    if count > 0:
+        print("Data already exists in the DB, loading triples from Neo4j...")
         triples = load_triples_from_neo4j(neo4j_connection)
     else:
+        print("No data found in the DB, creating new triples...")
         triples = index_kg(args, context_docs)
 
     print("Number of triples in our GraphDB =", len(triples))
