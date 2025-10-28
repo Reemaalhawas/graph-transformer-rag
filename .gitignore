@@ -2,4 +2,5 @@ scratch/
 .DS_Store
 .idea/
 .ipynb_checkpoints/
-
+lecture_corpus_txt2kg_nvidia/techqa/
+lecture_corpus_txt2kg_nvidia/__pycache__/
