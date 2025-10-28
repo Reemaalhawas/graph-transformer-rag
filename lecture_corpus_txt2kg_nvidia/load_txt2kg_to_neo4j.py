@@ -45,20 +45,25 @@ def chunks(data: List, chunk_size: int = 10000):
         yield data[i:i + chunk_size]
 
 
-def load_triplets_to_neo4j(triplets_file: str, credentials: dict, chunk_size: int = 5000):
+def load_triplets_to_neo4j(triplets_source, credentials: dict, chunk_size: int = 5000):
     """
-    Load triplets from .pt file into Neo4j
+    Load triplets into Neo4j from file or list
     
     Args:
-        triplets_file: Path to .pt file containing triplets
+        triplets_source: Either path to .pt file or list of triplets
         credentials: Neo4j connection credentials
         chunk_size: Number of triplets to process in each batch
     """
     
-    # Load triplets from .pt file
-    print(f"Loading triplets from {triplets_file}...")
-    triplets = torch.load(triplets_file)
-    print(f"Loaded {len(triplets):,} triplets")
+    # Load triplets from file or use provided list
+    if isinstance(triplets_source, str):
+        print(f"Loading triplets from {triplets_source}...")
+        triplets = torch.load(triplets_source)
+        print(f"Loaded {len(triplets):,} triplets")
+    else:
+        # Assume it's already a list of triplets
+        triplets = triplets_source
+        print(f"Using provided list of {len(triplets):,} triplets")
     
     # Normalize and deduplicate
     print("Normalizing and preparing data...")

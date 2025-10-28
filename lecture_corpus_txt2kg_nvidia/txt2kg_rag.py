@@ -55,6 +55,9 @@ from torch_geometric.llm.utils.vectorrag import DocumentRetriever
 from torch_geometric.loader import DataLoader
 from torch_geometric.nn import GAT, SGFormer
 
+# Import Neo4j loading functions
+from load_txt2kg_to_neo4j import load_triplets_to_neo4j
+
 # Define constants for better readability
 NV_NIM_MODEL_DEFAULT = "nvidia/llama-3.1-nemotron-ultra-253b-v1"
 LLM_GENERATOR_NAME_DEFAULT = "meta-llama/Meta-Llama-3.1-8B-Instruct"
@@ -375,6 +378,22 @@ def index_kg(args, context_docs):
             args.dataset).glob("*--*--checkpoint_kg.pt"):
         os.remove(old_checkpoint_file)
 
+    # Also save triples to Neo4j if connection is available
+    if os.path.exists('lecture_corpus.env'):
+        print("Found Neo4j configuration, saving triples to Neo4j...")
+        load_dotenv('lecture_corpus.env', override=True)
+        neo4j_connection = {
+            'uri': os.getenv('NEO4J_URI'),
+            'database': os.getenv('NEO4J_DATABASE'),
+            'username': os.getenv('NEO4J_USERNAME'),
+            'password': os.getenv('NEO4J_PASSWORD')
+        }
+        
+        try:
+            load_triplets_to_neo4j(triples, neo4j_connection)
+        except Exception as e:
+            print(f"Warning: Failed to save triples to Neo4j: {e}")
+
     return triples
 
 
@@ -458,19 +477,6 @@ def make_dataset(args):
     data_lists = {"train": [], "validation": [], "test": []}
 
     triples = []
-    raw_triples_file = list(Path(args.dataset).glob("*--*--raw_triples.pt"))
-    if len(raw_triples_file) > 1:
-        raise RuntimeError("Error: multiple raw_triples files found")
-    if len(raw_triples_file) == 1:
-        raw_triples_file = raw_triples_file[0]
-        stored_model_name = raw_triples_file.name.split('--')[0]
-
-        if args.NV_NIM_MODEL.split('/')[-1] != stored_model_name:
-            raise RuntimeError(
-                "Error: stored triples were generated using a different model")
-
-        print(f" -> Saved triples generated with: {stored_model_name}")
-        triples = torch.load(raw_triples_file)
     if os.path.exists('lecture_corpus.env'):
         load_dotenv('lecture_corpus.env', override=True)
         neo4j_connection = {
