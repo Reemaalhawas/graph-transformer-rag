@@ -4,3 +4,10 @@ scratch/
 .ipynb_checkpoints/
 lecture_corpus_txt2kg_nvidia/techqa/
 lecture_corpus_txt2kg_nvidia/__pycache__/
+.cache/
+data/stark/prime/processed/
+__pycache__/
+*.pt
+*.safetensors
+db.env
+.env
