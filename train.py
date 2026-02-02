@@ -85,7 +85,7 @@ def train(args):
     test_loader = DataLoader(test_set, batch_size=args.eval_batch_size)
 
     # Model Selection
-    if args.gnn_type == 'gt':
+    if args.gnn_type == 'gat':
         gnn = GraphTransformer(1536, args.gnn_hidden_channels, 1536, args.num_gnn_layers)
     else:
         gnn = GAT(in_channels=1536, hidden_channels=args.gnn_hidden_channels, out_channels=1536, num_layers=args.num_gnn_layers, heads=4)
