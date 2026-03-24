@@ -59,17 +59,16 @@ def embed(doc_list: List[str]) -> List:
 # ---------------------------------------------------------------------------
 
 def get_nodes_by_vector_search(prompt: str, driver: Driver, k: int = 4) -> List:
+    # Embed query in Python first (avoids needing genai plugin in Neo4j)
+    query_embedding = embedding_model.embed_query(prompt)
     res = driver.execute_query("""
-        WITH genai.vector.encode(
-          $searchPrompt, "OpenAI", {token: $token}) AS queryVector
-        CALL db.index.vector.queryNodes($index, $k, queryVector) YIELD node
+        CALL db.index.vector.queryNodes($index, $k, $query_embedding) YIELD node
         RETURN node.nodeId AS nodeId
         """,
         parameters_={
-            "searchPrompt": prompt,
-            "token": OPENAI_API_KEY,
             "index": "text_embeddings",
             "k": k,
+            "query_embedding": query_embedding,
         })
     return [rec.data()['nodeId'] for rec in res.records]
 
