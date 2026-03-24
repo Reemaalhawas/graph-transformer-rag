@@ -1,7 +1,7 @@
 """
 Build and save pre-computed subgraphs from Neo4j + OpenAI embeddings.
 Uses PCST (Prize-Collecting Steiner Tree) to prune subgraphs, following
-the NVIDIA G-Retriever reference implementation.
+the NVIDIA G-Retriever reference implementation exactly.
 Saves each Q&A pair as an individual .pt file ready for train.py.
 
 Usage:
@@ -116,60 +116,122 @@ def get_node_df(node_ids: List, rel_df: pd.DataFrame, driver: Driver) -> pd.Data
 
 
 # ---------------------------------------------------------------------------
-# PCST pruning
+# PCST prize assignment  (matches NVIDIA reference exactly)
 # ---------------------------------------------------------------------------
 
-def apply_pcst(node_df: pd.DataFrame, rel_df: pd.DataFrame,
-               query_embedding: List[float],
-               topk_node_ids: List) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def assign_prizes(
+    node_df: pd.DataFrame,
+    rel_df: pd.DataFrame,
+    query_embedding: List[float],
+    topk_node_ids: List,
+    topk: int = 5,
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Prune the candidate subgraph using Prize-Collecting Steiner Tree.
-
-    Node prizes  = cosine similarity between node embedding and query embedding.
-                   Seed nodes (from vector search) get a bonus prize of 1.0.
-    Edge costs   = uniform 1.0 per edge.
+    Node prizes : linspace(4, 0) for the top-k seed nodes (by vector search rank).
+    Edge prizes : top-k edges by cosine similarity to query get descending int prizes.
+    Matches assign_prizes_topk() in the NVIDIA reference.
     """
-    node_df = node_df.reset_index(drop=True)
     id_to_idx = {row['nodeId']: i for i, row in node_df.iterrows()}
 
-    # Node prizes
-    node_embs = np.stack(node_df['textEmbedding'].tolist()).astype(np.float64)
+    # --- node prizes ---
+    n_prizes = torch.zeros(len(node_df))
+    top_local = [id_to_idx[nid] for nid in topk_node_ids if nid in id_to_idx]
+    if top_local:
+        n_prizes[top_local] = torch.linspace(4, 0, steps=len(top_local)).float()
+
+    # --- edge prizes ---
     q_emb = np.array(query_embedding, dtype=np.float64)
-    norms = np.linalg.norm(node_embs, axis=1)
+    edge_embs = np.stack(rel_df['textEmbedding'].tolist()).astype(np.float64)
     q_norm = np.linalg.norm(q_emb)
-    cos_sim = (node_embs @ q_emb) / (norms * q_norm + 1e-8)
-    prizes = np.clip(cos_sim, 0, None)
+    e_norms = np.linalg.norm(edge_embs, axis=1)
+    cos_sims = (edge_embs @ q_emb) / (e_norms * q_norm + 1e-8)
 
-    # Bonus for seed nodes from vector search
-    for nid in topk_node_ids:
-        if nid in id_to_idx:
-            prizes[id_to_idx[nid]] += 1.0
+    k_edges = min(topk, len(cos_sims))
+    top_edge_idx = np.argsort(cos_sims)[::-1][:k_edges]
 
-    # Build edge arrays (only edges where both endpoints are in node_df)
+    e_prizes = torch.zeros(len(rel_df))
+    for rank, eidx in enumerate(top_edge_idx):
+        e_prizes[int(eidx)] = float(k_edges - rank)
+
+    return n_prizes, e_prizes
+
+
+# ---------------------------------------------------------------------------
+# PCST algorithm  (matches compute_pcst() in the NVIDIA reference exactly)
+# ---------------------------------------------------------------------------
+
+def compute_pcst(
+    base_edge_index: torch.Tensor,
+    num_nodes: int,
+    n_prizes: torch.Tensor,
+    e_prizes: torch.Tensor,
+    cost_e: float = 0.5,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Prize-Collecting Steiner Tree with virtual-node trick for high-prize edges.
+    Uses pruning='gw' and cost_e=0.5, exactly as in the NVIDIA reference.
+    """
+    root = -1
+    num_clusters = 1
+    pruning = 'gw'
+    verbosity_level = 0
+
+    costs = []
     edges = []
-    rel_indices = []
-    for i, row in rel_df.iterrows():
-        s, t = row['src'], row['tgt']
-        if s in id_to_idx and t in id_to_idx:
-            edges.append([id_to_idx[s], id_to_idx[t]])
-            rel_indices.append(i)
+    virtual_n_prizes = []
+    virtual_edges = []
+    virtual_costs = []
+    mapping_n = {}
+    mapping_e = {}
 
-    if not edges:
-        return node_df, rel_df
+    for i, (src, dst) in enumerate(base_edge_index.t().tolist()):
+        prize_e = float(e_prizes[i])
+        if prize_e <= cost_e:
+            mapping_e[len(edges)] = i
+            edges.append((src, dst))
+            costs.append(cost_e - prize_e)
+        else:
+            virtual_node_id = num_nodes + len(virtual_n_prizes)
+            mapping_n[virtual_node_id] = i
+            virtual_edges.append((src, virtual_node_id))
+            virtual_edges.append((virtual_node_id, dst))
+            virtual_costs.append(0)
+            virtual_costs.append(0)
+            virtual_n_prizes.append(prize_e - cost_e)
 
-    edges_arr = np.array(edges, dtype=np.int64)
-    costs = np.ones(len(edges_arr), dtype=np.float64)
+    prizes = np.concatenate([n_prizes.numpy(), np.array(virtual_n_prizes)])
+    num_real_edges = len(edges)
 
-    # Run PCST
-    selected_nodes, selected_edges = pcst_fast.pcst_fast(
-        edges_arr, prizes, costs, -1, 1, 'strong', 0
+    if len(virtual_costs) > 0:
+        all_costs = np.array(costs + virtual_costs)
+        all_edges = np.array(edges + virtual_edges, dtype=np.int64)
+    else:
+        all_costs = np.array(costs)
+        all_edges = np.array(edges, dtype=np.int64) if edges else np.zeros((0, 2), dtype=np.int64)
+
+    if len(all_edges) == 0:
+        return np.array([], dtype=np.int64), np.array([], dtype=np.int64)
+
+    vertices, sel_edges = pcst_fast.pcst_fast(
+        all_edges, prizes, all_costs, root, num_clusters, pruning, verbosity_level
     )
 
-    pruned_node_df = node_df.iloc[selected_nodes].reset_index(drop=True)
-    selected_rel_indices = [rel_indices[i] for i in selected_edges]
-    pruned_rel_df = rel_df.iloc[selected_rel_indices].reset_index(drop=True)
+    selected_nodes = vertices[vertices < num_nodes]
+    selected_edges = [mapping_e[e] for e in sel_edges if e < num_real_edges]
 
-    return pruned_node_df, pruned_rel_df
+    virtual_vertices = vertices[vertices >= num_nodes]
+    if len(virtual_vertices) > 0:
+        virtual_edge_ids = [mapping_n[v] for v in virtual_vertices]
+        selected_edges = np.array(selected_edges + virtual_edge_ids)
+    else:
+        selected_edges = np.array(selected_edges, dtype=np.int64)
+
+    # Add any nodes implied by selected edges
+    if len(selected_edges) > 0:
+        edge_nodes = base_edge_index[:, selected_edges].numpy().flatten()
+        selected_nodes = np.unique(np.concatenate([selected_nodes, edge_nodes]))
+
+    return selected_nodes, selected_edges
 
 
 # ---------------------------------------------------------------------------
@@ -177,7 +239,6 @@ def apply_pcst(node_df: pd.DataFrame, rel_df: pd.DataFrame,
 # ---------------------------------------------------------------------------
 
 def get_entity_name_from_skb(skb, entity_id: int) -> str:
-    """Get entity name from STaRK SKB by entity ID."""
     try:
         attrs = skb.node_attr_dict[entity_id]
         if isinstance(attrs, dict):
@@ -210,11 +271,7 @@ def get_entity_name_from_skb(skb, entity_id: int) -> str:
 
 
 def get_answer_names_from_skb(answer_ids: List[int], skb) -> str:
-    """Get '|'-separated entity names from STaRK SKB.
-
-    IMPORTANT: STaRK answer_ids are entity IDs in the STaRK/PrimeKG space,
-    NOT Neo4j nodeIds. Always use this function for label generation.
-    """
+    """Get '|'-separated entity names from STaRK SKB."""
     names = [get_entity_name_from_skb(skb, aid) for aid in answer_ids]
     names = [n for n in names if n]
     return ' | '.join(names)
@@ -255,42 +312,59 @@ def build_data(query: str, answer_ids: List[int], driver: Driver,
     rel_df = rel_df.copy()
     rel_df['textEmbedding'] = embed(rel_df['text'].tolist())
 
-    # 5. Apply PCST pruning
-    node_df, rel_df = apply_pcst(node_df, rel_df, query_embedding, init_node_ids)
-    if node_df.shape[0] == 0 or rel_df.shape[0] == 0:
-        return None
-
-    # 6. Re-index nodes for edge_index
+    # 5. Build base edge_index (local integer indices)
     node_df = node_df.reset_index(drop=True)
     id_to_idx = {row['nodeId']: i for i, row in node_df.iterrows()}
 
-    valid = [(s, t, e) for s, t, e in zip(
-        rel_df['src'], rel_df['tgt'], rel_df['textEmbedding'])
-        if s in id_to_idx and t in id_to_idx]
-
-    if not valid:
+    valid_mask = rel_df.apply(
+        lambda r: r['src'] in id_to_idx and r['tgt'] in id_to_idx, axis=1)
+    rel_df = rel_df[valid_mask].reset_index(drop=True)
+    if rel_df.shape[0] == 0:
         return None
 
-    src_idx  = [id_to_idx[s] for s, t, e in valid]
-    tgt_idx  = [id_to_idx[t] for s, t, e in valid]
-    edge_embs = [e for s, t, e in valid]
+    src_idx = [id_to_idx[s] for s in rel_df['src']]
+    tgt_idx = [id_to_idx[t] for t in rel_df['tgt']]
+    base_edge_index = torch.tensor([src_idx, tgt_idx], dtype=torch.long)
 
-    # 7. Tensors
+    # 6. Assign prizes (NVIDIA reference logic)
+    n_prizes, e_prizes = assign_prizes(
+        node_df, rel_df, query_embedding, init_node_ids)
+
+    # 7. Run PCST (NVIDIA reference logic)
+    selected_nodes, selected_edges = compute_pcst(
+        base_edge_index, len(node_df), n_prizes, e_prizes)
+
+    if len(selected_nodes) == 0:
+        return None
+
+    # 8. Build pruned tensors
+    pruned_node_df = node_df.iloc[selected_nodes].reset_index(drop=True)
+
+    mapping = {int(n): i for i, n in enumerate(selected_nodes)}
+    if len(selected_edges) > 0:
+        pruned_ei = base_edge_index[:, selected_edges]
+        src_pruned = [mapping[int(s)] for s in pruned_ei[0].tolist()]
+        tgt_pruned = [mapping[int(t)] for t in pruned_ei[1].tolist()]
+        edge_embs = [rel_df.iloc[int(e)]['textEmbedding'] for e in selected_edges]
+        edge_index = torch.tensor([src_pruned, tgt_pruned], dtype=torch.long)
+        edge_attr  = torch.tensor(np.array(edge_embs), dtype=torch.float)
+    else:
+        edge_index = torch.zeros((2, 0), dtype=torch.long)
+        edge_attr  = torch.zeros((0, 1536), dtype=torch.float)
+
     x = torch.tensor(
-        np.stack(node_df['textEmbedding'].tolist()), dtype=torch.float)
-    edge_index = torch.tensor([src_idx, tgt_idx], dtype=torch.long)
-    edge_attr  = torch.tensor(np.array(edge_embs), dtype=torch.float)
+        np.stack(pruned_node_df['textEmbedding'].tolist()), dtype=torch.float)
 
-    # Label: entity names from STaRK SKB (not Neo4j — different ID spaces!)
+    # Label
     if skb is None:
-        raise ValueError("skb (STaRK knowledge base) must be provided for label generation")
+        raise ValueError("skb must be provided")
     label = get_answer_names_from_skb(answer_ids, skb)
     if not label:
         return None
 
-    # Desc: node names as context string for the LLM prompt
+    # Desc
     desc_parts = []
-    for _, row in node_df.iterrows():
+    for _, row in pruned_node_df.iterrows():
         name = row.get('name') or ''
         if name:
             details = row.get('details') or ''
@@ -319,7 +393,6 @@ def main():
                         help='Skip questions whose .pt file already exists')
     args = parser.parse_args()
 
-    # Load STaRK-QA dataset and SKB
     print("Loading STaRK-QA Prime dataset...")
     from stark_qa import load_qa, load_skb
     qa_dataset = load_qa('prime')
