@@ -9,6 +9,7 @@ Usage:
 """
 
 import os
+import ast
 import argparse
 import torch
 import numpy as np
@@ -95,35 +96,50 @@ def get_subgraph_rels(node_ids: List, driver: Driver) -> pd.DataFrame:
     return pd.DataFrame([rec.data() for rec in res.records])
 
 
-def get_answer_names_from_skb(answer_ids: List[int], skb) -> str:
-    """Get entity names from STaRK SKB using answer_ids (STaRK entity indices).
+def get_entity_name_from_skb(skb, entity_id: int) -> str:
+    """Get entity name from STaRK SKB by entity ID."""
+    # Method 1: node_attr_dict (direct lookup by entity ID)
+    try:
+        attrs = skb.node_attr_dict[entity_id]
+        if isinstance(attrs, dict):
+            name = attrs.get('name') or attrs.get('title') or attrs.get('id', '')
+            if name:
+                return str(name)
+    except Exception:
+        pass
+    # Method 2: node_info
+    try:
+        info = skb.node_info[entity_id]
+        if isinstance(info, dict):
+            name = info.get('name') or info.get('title') or ''
+            if name:
+                return str(name)
+    except Exception:
+        pass
+    # Method 3: get_doc_info by sequential index in candidate_ids
+    try:
+        cand_list = list(skb.candidate_ids)
+        if entity_id in cand_list:
+            idx = cand_list.index(entity_id)
+            doc = skb.get_doc_info(idx, add_rel=False, compact=True)
+            first = str(doc).strip().split('\n')[0]
+            if ':' in first:
+                return first.split(':', 1)[1].strip()
+            if first and not first.startswith('--'):
+                return first
+    except Exception:
+        pass
+    return ''
 
-    IMPORTANT: STaRK answer_ids are indices into the SKB entity list,
+
+def get_answer_names_from_skb(answer_ids: List[int], skb) -> str:
+    """Get '|'-separated entity names from STaRK SKB.
+
+    IMPORTANT: STaRK answer_ids are entity IDs in the STaRK/PrimeKG space,
     NOT Neo4j nodeIds. Always use this function for label generation.
     """
-    names = []
-    for aid in answer_ids:
-        name = None
-        # Try get_doc_info (most common stark_qa API)
-        try:
-            doc = skb.get_doc_info(aid, add_rel=False, compact=True)
-            first_line = str(doc).strip().split('\n')[0].strip()
-            if first_line:
-                name = first_line
-        except Exception:
-            pass
-        # Fallback: direct indexing
-        if not name:
-            try:
-                entity = skb[aid]
-                if isinstance(entity, dict):
-                    name = entity.get('name') or entity.get('title') or ''
-                else:
-                    name = str(entity).split('\n')[0].strip()
-            except Exception:
-                pass
-        if name:
-            names.append(name)
+    names = [get_entity_name_from_skb(skb, aid) for aid in answer_ids]
+    names = [n for n in names if n]
     return ' | '.join(names)
 
 
@@ -261,8 +277,13 @@ def main():
                 continue
 
             try:
-                query      = row['query']
-                answer_ids = list(row['answer_ids'])
+                query = row['query']
+                # answer_ids may be stored as a string like "[95886]" in pandas
+                raw_ids = row['answer_ids']
+                if isinstance(raw_ids, str):
+                    answer_ids = [int(x) for x in ast.literal_eval(raw_ids)]
+                else:
+                    answer_ids = [int(x) for x in raw_ids]
 
                 data = build_data(query, answer_ids, driver, skb=skb)
 
