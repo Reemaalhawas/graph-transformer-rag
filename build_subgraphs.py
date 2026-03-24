@@ -227,6 +227,9 @@ def compute_pcst(
         selected_edges = np.array(selected_edges, dtype=np.int64)
 
     # Add any nodes implied by selected edges
+    # Deduplicate (virtual nodes can map back to same original edge)
+    selected_edges = np.unique(selected_edges).astype(np.int64)
+
     if len(selected_edges) > 0:
         edge_nodes = base_edge_index[:, selected_edges].numpy().flatten()
         selected_nodes = np.unique(np.concatenate([selected_nodes, edge_nodes]))
