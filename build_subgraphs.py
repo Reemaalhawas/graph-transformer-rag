@@ -66,7 +66,7 @@ def get_nodes_by_vector_search(prompt: str, driver: Driver, k: int = 4) -> List:
         RETURN node.nodeId AS nodeId
         """,
         parameters_={
-            "index": "text_embeddings",
+            "index": "textembeddings",
             "k": k,
             "query_embedding": query_embedding,
         })
