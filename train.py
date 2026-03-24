@@ -193,15 +193,14 @@ class GATEncoder(nn.Module):
     """
     GAT encoder — matches reference architecture exactly.
     Uses GATConv with 4 heads and 1536-dim hidden/output.
+    No LayerNorm between layers (matches PyG's built-in GAT).
     """
 
     def __init__(self, in_channels=1536, hidden_channels=1536,
                  out_channels=1536, num_layers=4, heads=4, dropout=0.0, **kwargs):
         super().__init__()
         head_dim = hidden_channels // heads
-
         self.convs = nn.ModuleList()
-        self.norms = nn.ModuleList()
 
         for i in range(num_layers):
             in_ch   = in_channels if i == 0 else hidden_channels
@@ -210,21 +209,18 @@ class GATEncoder(nn.Module):
                 self.convs.append(GATConv(
                     in_ch, out_channels, heads=1, concat=False,
                     dropout=dropout))
-                self.norms.append(nn.LayerNorm(out_channels))
             else:
                 self.convs.append(GATConv(
                     in_ch, head_dim, heads=heads, concat=True,
                     dropout=dropout))
-                self.norms.append(nn.LayerNorm(hidden_channels))
 
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, edge_index, batch=None):
-        for i, (conv, norm) in enumerate(zip(self.convs, self.norms)):
+        for i, conv in enumerate(self.convs):
             x = conv(x, edge_index)
-            x = norm(x)
             if i < len(self.convs) - 1:
-                x = F.relu(x)
+                x = F.elu(x)
                 x = self.dropout(x)
         return x
 
@@ -340,12 +336,11 @@ class GRetriever(nn.Module):
         self.llm = get_peft_model(self.llm, lora_cfg)
         self.llm.print_trainable_parameters()
 
-        # ── Graph → LLM projection ───────────────────────────────────────────
+        # ── Graph → LLM projection  (matches PyG GRetriever exactly) ────────
         llm_hidden = self.llm.config.hidden_size
         self.graph_proj = nn.Sequential(
             nn.Linear(config["gnn_out"], llm_hidden),
-            nn.LayerNorm(llm_hidden),
-            nn.GELU(),
+            nn.Sigmoid(),
             nn.Linear(llm_hidden, llm_hidden),
         )
 
