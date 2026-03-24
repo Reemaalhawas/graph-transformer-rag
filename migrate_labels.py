@@ -7,6 +7,7 @@ Usage:
     python migrate_labels.py
 """
 
+import ast
 import os
 import torch
 from tqdm import tqdm
@@ -20,6 +21,39 @@ NEO4J_USERNAME = os.getenv('NEO4J_USERNAME')
 NEO4J_PASSWORD = os.getenv('NEO4J_PASSWORD')
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'processed')
+
+
+def parse_answer_ids(answer):
+    """Robustly convert any answer format to a flat list of integer node IDs."""
+    if answer is None:
+        return []
+    # String: "[15450, 23491]" or "15450"
+    if isinstance(answer, str):
+        parsed = ast.literal_eval(answer.strip())
+        return parse_answer_ids(parsed)
+    # Torch tensor
+    if isinstance(answer, torch.Tensor):
+        return parse_answer_ids(answer.tolist())
+    # Numpy array or any object with tolist()
+    if hasattr(answer, 'tolist') and not isinstance(answer, (list, tuple)):
+        return parse_answer_ids(answer.tolist())
+    # List or tuple — recurse into each element
+    if isinstance(answer, (list, tuple)):
+        result = []
+        for item in answer:
+            if isinstance(item, (list, tuple, str)) or hasattr(item, 'tolist'):
+                result.extend(parse_answer_ids(item))
+            else:
+                try:
+                    result.append(int(item))
+                except (TypeError, ValueError):
+                    pass
+        return result
+    # Single value
+    try:
+        return [int(answer)]
+    except (TypeError, ValueError):
+        return []
 
 
 def get_names(node_ids, driver):
@@ -53,17 +87,12 @@ def main():
                     already_migrated += 1
                     continue
 
-                # Get answer node IDs — handle list, tensor, or string repr
+                # Get answer node IDs — handle any storage format
                 if hasattr(data, 'answer') and data.answer is not None:
-                    ans = data.answer
-                    if isinstance(ans, str):
-                        import ast
-                        ans = ast.literal_eval(ans)
-                    if isinstance(ans, torch.Tensor):
-                        ans = ans.tolist()
-                    if not isinstance(ans, list):
-                        ans = [ans]
-                    answer_ids = [int(a) for a in ans]
+                    answer_ids = parse_answer_ids(data.answer)
+                    if not answer_ids:
+                        skipped += 1
+                        continue
                 else:
                     skipped += 1
                     continue
