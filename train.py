@@ -1,31 +1,31 @@
 """
 G-Retriever Training Script
 ============================
-Supports GAT, Transformer, and GCN encoders.
-Supports baseline, subgraph_pruning, g_retriever, and pipeline modes.
+Architecture aligned with NVIDIA reference implementation.
+Thesis contribution: Graph Transformer and GCN encoders in addition to GAT.
 
 Usage:
-    python train.py --encoder gat --mode g_retriever --seed 42
-    python train.py --encoder transformer --mode pipeline --seed 42
-    python train.py --encoder gcn --mode subgraph_pruning --seed 42
-    python train.py --mode baseline --seed 42
+    python train.py --encoder gat --epochs 2
+    python train.py --encoder transformer --epochs 2
+    python train.py --encoder gcn --epochs 2
+    python train.py --encoder gat --eval_only --checkpoint results/gat_seed42/best_model.pt
 """
 
 import os
+import re
 import json
-import gc
+import math
+import time
 import argparse
-from datetime import datetime
-from typing import List, Dict, Optional
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
 from tqdm import tqdm
 
-from torch.utils.data import Dataset, DataLoader
 from torch_geometric.data import Data, Batch
+from torch_geometric.loader import DataLoader
 from torch_geometric.nn import GATConv, TransformerConv, GCNConv, global_mean_pool
 
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
@@ -33,305 +33,119 @@ from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
 
 
 # =============================================================================
-# CONFIGURATION
+# CONFIGURATION  (matches reference hyperparameters)
 # =============================================================================
 
 DEFAULT_CONFIG = {
-    # Model
-    "gnn_in_channels": 1536,      # OpenAI embedding dimension
-    "gnn_hidden": 128,
-    "gnn_out": 256,
-    "gnn_layers": 2,
-    "gnn_heads": 4,
-    "gnn_dropout": 0.1,
+    # GNN  — same dimensions as reference (1536 throughout)
+    "gnn_in_channels":  1536,
+    "gnn_hidden":       1536,
+    "gnn_out":          1536,
+    "gnn_layers":       4,
+    "gnn_heads":        4,
+    "gnn_dropout":      0.0,
 
     # LLM
     "llm_name": "meta-llama/Llama-3.1-8B-Instruct",
     "load_in_4bit": True,
 
     # LoRA
-    "lora_r": 8,
-    "lora_alpha": 16,
-    "lora_dropout": 0.1,
+    "lora_r":       8,
+    "lora_alpha":   16,
+    "lora_dropout": 0.05,
 
-    # Training
-    "epochs": 3,
-    "batch_size": 4,
-    "lr": 1e-4,
-    "weight_decay": 0.01,
-    "max_grad_norm": 1.0,
-    "warmup_ratio": 0.1,
+    # Training  — matches reference
+    "epochs":        2,
+    "batch_size":    4,
+    "eval_batch_size": 16,
+    "lr":            1e-5,
+    "weight_decay":  0.05,
+    "max_grad_norm": 0.1,
+    "grad_steps":    2,       # gradient accumulation steps
+    "min_lr":        5e-6,
+    "warmup_epochs": 1,
 
-    # Data
-    "max_length": 512,
-    "max_new_tokens": 64,
+    # Generation
+    "max_new_tokens": 32,
+    "max_txt_len":    512,
 }
 
 
 # =============================================================================
-# DATASET - Loads Pre-computed Subgraphs
+# DATASET
 # =============================================================================
 
-class PrecomputedSubgraphDataset(Dataset):
-    """
-    Dataset that loads pre-computed subgraphs from .pt files.
-    Each .pt file contains a PyG Data object with:
-        - x: node features [num_nodes, 1536]
-        - edge_index: [2, num_edges]
-        - edge_attr: edge features [num_edges, 1536] (optional)
-        - question: the query string
-        - answer: list of answer node IDs or string
-        - node_texts: list of node text descriptions (optional)
-    """
+class SubgraphDataset(torch.utils.data.Dataset):
+    """Loads pre-computed .pt subgraph files."""
 
-    def __init__(
-        self,
-        data_dir: str,
-        tokenizer,
-        max_length: int = 512,
-        split: str = "train"
-    ):
+    def __init__(self, data_dir: str, split: str = 'all'):
         self.data_dir = data_dir
-        self.tokenizer = tokenizer
-        self.max_length = max_length
-        self.split = split
+        files = sorted([f for f in os.listdir(data_dir) if f.endswith('.pt')])
 
-        # Get all .pt files
-        self.files = sorted([
-            f for f in os.listdir(data_dir)
-            if f.endswith('.pt')
-        ])
+        # 80 / 10 / 10 split (deterministic by sorted filename order)
+        n = len(files)
+        train_end = int(0.8 * n)
+        val_end   = int(0.9 * n)
 
-        print(f"[{split}] Found {len(self.files)} subgraphs in {data_dir}")
+        if split == 'train':
+            self.files = files[:train_end]
+        elif split == 'val':
+            self.files = files[train_end:val_end]
+        elif split == 'test':
+            self.files = files[val_end:]
+        else:
+            self.files = files
+
+        print(f"[{split}] {len(self.files)} subgraphs")
 
     def __len__(self):
         return len(self.files)
 
     def __getitem__(self, idx):
-        # Load pre-computed subgraph
-        path = os.path.join(self.data_dir, self.files[idx])
-        data = torch.load(path, weights_only=False)
-
-        # Extract components
-        x = data.x  # Node features
-        edge_index = data.edge_index
-        edge_attr = data.edge_attr if hasattr(data, 'edge_attr') and data.edge_attr is not None else None
-
-        question = data.question
-        answer = data.answer
-
-        # Optional node text descriptions for pipeline mode
-        node_texts = getattr(data, 'node_texts', None)
-
-        # Convert answer to string
-        if isinstance(answer, list):
-            answer_str = " | ".join(str(a) for a in answer)
-        else:
-            answer_str = str(answer) if answer else ""
-
-        # Create prompt
-        prompt = f"Question: {question}\n\nAnswer:"
-
-        # Tokenize
-        prompt_encoding = self.tokenizer(
-            prompt,
-            truncation=True,
-            max_length=self.max_length,
-            padding='max_length',
-            return_tensors='pt'
+        data = torch.load(
+            os.path.join(self.data_dir, self.files[idx]),
+            weights_only=False,
         )
-
-        full_text = f"Question: {question}\n\nAnswer: {answer_str}"
-        full_encoding = self.tokenizer(
-            full_text,
-            truncation=True,
-            max_length=self.max_length,
-            padding='max_length',
-            return_tensors='pt'
-        )
-
-        # Create labels (mask prompt tokens with -100)
-        labels = full_encoding['input_ids'].clone()
-        prompt_len = prompt_encoding['attention_mask'].sum()
-        labels[0, :prompt_len] = -100  # Don't compute loss on prompt
-
-        return {
-            'x': x.float(),
-            'edge_index': edge_index.long(),
-            'edge_attr': edge_attr.float() if edge_attr is not None else None,
-            'input_ids': full_encoding['input_ids'].squeeze(0),
-            'attention_mask': full_encoding['attention_mask'].squeeze(0),
-            'labels': labels.squeeze(0),
-            'question': question,
-            'answer_str': answer_str,
-            'node_texts': node_texts,
-        }
-
-
-def collate_fn(batch):
-    """Custom collate function to batch graphs and text together."""
-
-    # Build list of PyG Data objects
-    graphs = []
-    for item in batch:
-        g = Data(
-            x=item['x'],
-            edge_index=item['edge_index'],
-        )
-        if item['edge_attr'] is not None:
-            g.edge_attr = item['edge_attr']
-        graphs.append(g)
-
-    # Batch graphs using PyG
-    batched_graph = Batch.from_data_list(graphs)
-
-    # Stack text tensors
-    input_ids = torch.stack([item['input_ids'] for item in batch])
-    attention_mask = torch.stack([item['attention_mask'] for item in batch])
-    labels = torch.stack([item['labels'] for item in batch])
-
-    return {
-        'x': batched_graph.x,
-        'edge_index': batched_graph.edge_index,
-        'edge_attr': batched_graph.edge_attr if hasattr(batched_graph, 'edge_attr') else None,
-        'batch': batched_graph.batch,
-        'input_ids': input_ids,
-        'attention_mask': attention_mask,
-        'labels': labels,
-        'questions': [item['question'] for item in batch],
-        'answer_strs': [item['answer_str'] for item in batch],
-        'node_texts': [item['node_texts'] for item in batch],
-    }
+        # Compatibility: old files use 'answer' (int IDs), new use 'label' (names)
+        if not hasattr(data, 'label') or not data.label:
+            ans = getattr(data, 'answer', [])
+            data.label = ' | '.join(str(a) for a in ans) if ans else ''
+        if not hasattr(data, 'desc') or data.desc is None:
+            data.desc = ''
+        return data
 
 
 # =============================================================================
 # GNN ENCODERS
 # =============================================================================
 
-class GATEncoder(nn.Module):
-    """
-    Graph Attention Network encoder.
-    Uses local neighborhood attention.
-    """
-
-    def __init__(
-        self,
-        in_channels: int,
-        hidden_channels: int = 128,
-        out_channels: int = 256,
-        num_layers: int = 2,
-        heads: int = 4,
-        dropout: float = 0.1
-    ):
-        super().__init__()
-
-        self.convs = nn.ModuleList()
-        self.norms = nn.ModuleList()
-
-        # First layer
-        self.convs.append(GATConv(
-            in_channels,
-            hidden_channels,
-            heads=heads,
-            dropout=dropout,
-            concat=True
-        ))
-        self.norms.append(nn.LayerNorm(hidden_channels * heads))
-
-        # Hidden layers
-        for _ in range(num_layers - 2):
-            self.convs.append(GATConv(
-                hidden_channels * heads,
-                hidden_channels,
-                heads=heads,
-                dropout=dropout,
-                concat=True
-            ))
-            self.norms.append(nn.LayerNorm(hidden_channels * heads))
-
-        # Output layer
-        if num_layers > 1:
-            self.convs.append(GATConv(
-                hidden_channels * heads,
-                out_channels,
-                heads=1,
-                dropout=dropout,
-                concat=False
-            ))
-            self.norms.append(nn.LayerNorm(out_channels))
-
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, x, edge_index, batch=None):
-        for i, (conv, norm) in enumerate(zip(self.convs, self.norms)):
-            x = conv(x, edge_index)
-            x = norm(x)
-            if i < len(self.convs) - 1:
-                x = F.relu(x)
-                x = self.dropout(x)
-
-        # Global mean pooling to get graph-level representation
-        if batch is not None:
-            x = global_mean_pool(x, batch)
-
-        return x
-
-
 class GraphTransformerEncoder(nn.Module):
     """
-    Graph Transformer encoder.
-    Uses transformer-style global attention over graph.
+    Graph Transformer encoder using TransformerConv.
+    Thesis contribution — transformer-style global attention over the graph.
     """
 
-    def __init__(
-        self,
-        in_channels: int,
-        hidden_channels: int = 128,
-        out_channels: int = 256,
-        num_layers: int = 2,
-        heads: int = 4,
-        dropout: float = 0.1,
-        beta: bool = True  # Learnable skip connection
-    ):
+    def __init__(self, in_channels=1536, hidden_channels=1536,
+                 out_channels=1536, num_layers=4, heads=4, dropout=0.0, **kwargs):
         super().__init__()
+        head_dim = hidden_channels // heads
 
         self.convs = nn.ModuleList()
         self.norms = nn.ModuleList()
 
-        # First layer
-        self.convs.append(TransformerConv(
-            in_channels,
-            hidden_channels,
-            heads=heads,
-            dropout=dropout,
-            beta=beta,
-            concat=True
-        ))
-        self.norms.append(nn.LayerNorm(hidden_channels * heads))
-
-        # Hidden layers
-        for _ in range(num_layers - 2):
-            self.convs.append(TransformerConv(
-                hidden_channels * heads,
-                hidden_channels,
-                heads=heads,
-                dropout=dropout,
-                beta=beta,
-                concat=True
-            ))
-            self.norms.append(nn.LayerNorm(hidden_channels * heads))
-
-        # Output layer
-        if num_layers > 1:
-            self.convs.append(TransformerConv(
-                hidden_channels * heads,
-                out_channels,
-                heads=1,
-                dropout=dropout,
-                beta=beta,
-                concat=False
-            ))
-            self.norms.append(nn.LayerNorm(out_channels))
+        for i in range(num_layers):
+            in_ch  = in_channels if i == 0 else hidden_channels
+            is_last = (i == num_layers - 1)
+            if is_last:
+                self.convs.append(TransformerConv(
+                    in_ch, out_channels, heads=1, concat=False,
+                    dropout=dropout, beta=True))
+                self.norms.append(nn.LayerNorm(out_channels))
+            else:
+                self.convs.append(TransformerConv(
+                    in_ch, head_dim, heads=heads, concat=True,
+                    dropout=dropout, beta=True))
+                self.norms.append(nn.LayerNorm(hidden_channels))
 
         self.dropout = nn.Dropout(dropout)
 
@@ -342,46 +156,26 @@ class GraphTransformerEncoder(nn.Module):
             if i < len(self.convs) - 1:
                 x = F.relu(x)
                 x = self.dropout(x)
-
-        if batch is not None:
-            x = global_mean_pool(x, batch)
-
         return x
 
 
 class GCNEncoder(nn.Module):
     """
-    Graph Convolutional Network encoder.
-    Uses spectral-based graph convolutions (Kipf & Welling 2017).
+    GCN encoder using GCNConv (Kipf & Welling 2017).
+    Thesis contribution — spectral-based convolution for comparison.
     """
 
-    def __init__(
-        self,
-        in_channels: int,
-        hidden_channels: int = 128,
-        out_channels: int = 256,
-        num_layers: int = 2,
-        dropout: float = 0.1,
-        **kwargs  # Accept and ignore heads/beta for API compatibility
-    ):
+    def __init__(self, in_channels=1536, hidden_channels=1536,
+                 out_channels=1536, num_layers=4, dropout=0.0, **kwargs):
         super().__init__()
-
         self.convs = nn.ModuleList()
         self.norms = nn.ModuleList()
 
-        # First layer
-        self.convs.append(GCNConv(in_channels, hidden_channels))
-        self.norms.append(nn.LayerNorm(hidden_channels))
-
-        # Hidden layers
-        for _ in range(num_layers - 2):
-            self.convs.append(GCNConv(hidden_channels, hidden_channels))
-            self.norms.append(nn.LayerNorm(hidden_channels))
-
-        # Output layer
-        if num_layers > 1:
-            self.convs.append(GCNConv(hidden_channels, out_channels))
-            self.norms.append(nn.LayerNorm(out_channels))
+        for i in range(num_layers):
+            in_ch  = in_channels if i == 0 else hidden_channels
+            out_ch = out_channels if i == num_layers - 1 else hidden_channels
+            self.convs.append(GCNConv(in_ch, out_ch))
+            self.norms.append(nn.LayerNorm(out_ch))
 
         self.dropout = nn.Dropout(dropout)
 
@@ -392,81 +186,94 @@ class GCNEncoder(nn.Module):
             if i < len(self.convs) - 1:
                 x = F.relu(x)
                 x = self.dropout(x)
-
-        if batch is not None:
-            x = global_mean_pool(x, batch)
-
         return x
 
 
-def get_gnn_encoder(encoder_type: str, config: dict) -> nn.Module:
-    """Factory function to get GNN encoder."""
+class GATEncoder(nn.Module):
+    """
+    GAT encoder — matches reference architecture exactly.
+    Uses GATConv with 4 heads and 1536-dim hidden/output.
+    """
+
+    def __init__(self, in_channels=1536, hidden_channels=1536,
+                 out_channels=1536, num_layers=4, heads=4, dropout=0.0, **kwargs):
+        super().__init__()
+        head_dim = hidden_channels // heads
+
+        self.convs = nn.ModuleList()
+        self.norms = nn.ModuleList()
+
+        for i in range(num_layers):
+            in_ch   = in_channels if i == 0 else hidden_channels
+            is_last = (i == num_layers - 1)
+            if is_last:
+                self.convs.append(GATConv(
+                    in_ch, out_channels, heads=1, concat=False,
+                    dropout=dropout))
+                self.norms.append(nn.LayerNorm(out_channels))
+            else:
+                self.convs.append(GATConv(
+                    in_ch, head_dim, heads=heads, concat=True,
+                    dropout=dropout))
+                self.norms.append(nn.LayerNorm(hidden_channels))
+
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x, edge_index, batch=None):
+        for i, (conv, norm) in enumerate(zip(self.convs, self.norms)):
+            x = conv(x, edge_index)
+            x = norm(x)
+            if i < len(self.convs) - 1:
+                x = F.relu(x)
+                x = self.dropout(x)
+        return x
+
+
+def get_gnn(encoder_type: str, config: dict) -> nn.Module:
+    kwargs = dict(
+        in_channels=config["gnn_in_channels"],
+        hidden_channels=config["gnn_hidden"],
+        out_channels=config["gnn_out"],
+        num_layers=config["gnn_layers"],
+        heads=config["gnn_heads"],
+        dropout=config["gnn_dropout"],
+    )
     if encoder_type == "gat":
-        return GATEncoder(
-            in_channels=config["gnn_in_channels"],
-            hidden_channels=config["gnn_hidden"],
-            out_channels=config["gnn_out"],
-            num_layers=config["gnn_layers"],
-            heads=config["gnn_heads"],
-            dropout=config["gnn_dropout"]
-        )
+        return GATEncoder(**kwargs)
     elif encoder_type == "transformer":
-        return GraphTransformerEncoder(
-            in_channels=config["gnn_in_channels"],
-            hidden_channels=config["gnn_hidden"],
-            out_channels=config["gnn_out"],
-            num_layers=config["gnn_layers"],
-            heads=config["gnn_heads"],
-            dropout=config["gnn_dropout"]
-        )
+        return GraphTransformerEncoder(**kwargs)
     elif encoder_type == "gcn":
-        return GCNEncoder(
-            in_channels=config["gnn_in_channels"],
-            hidden_channels=config["gnn_hidden"],
-            out_channels=config["gnn_out"],
-            num_layers=config["gnn_layers"],
-            dropout=config["gnn_dropout"]
-        )
-    else:
-        raise ValueError(f"Unknown encoder type: {encoder_type}")
+        return GCNEncoder(**kwargs)
+    raise ValueError(f"Unknown encoder: {encoder_type}")
 
 
 # =============================================================================
-# SUBGRAPH PRUNING
+# SUBGRAPH PRUNING  (thesis mode)
 # =============================================================================
 
-def prune_subgraph(x, edge_index, batch, keep_ratio: float = 0.5):
-    """
-    Prune each graph to its top-`keep_ratio` nodes by degree.
-    Returns new (x, edge_index, batch) with remapped node indices.
-    """
+def prune_subgraph(x, edge_index, batch, keep_ratio=0.5):
+    """Keep top-50% nodes by degree per graph."""
     num_nodes = x.size(0)
     device = x.device
 
-    # Compute undirected degree per node
     degrees = torch.zeros(num_nodes, device=device)
     if edge_index.size(1) > 0:
         degrees.scatter_add_(0, edge_index[0], torch.ones(edge_index.size(1), device=device))
         degrees.scatter_add_(0, edge_index[1], torch.ones(edge_index.size(1), device=device))
 
-    # Per-graph: keep top-50% nodes
     keep_mask = torch.zeros(num_nodes, dtype=torch.bool, device=device)
     for b in batch.unique():
-        b_mask = (batch == b)
-        b_indices = torch.where(b_mask)[0]
-        b_degrees = degrees[b_indices]
-        n_keep = max(1, int(len(b_indices) * keep_ratio))
-        _, top_local = torch.topk(b_degrees, n_keep)
-        keep_mask[b_indices[top_local]] = True
+        idx = torch.where(batch == b)[0]
+        n_keep = max(1, int(len(idx) * keep_ratio))
+        _, top = torch.topk(degrees[idx], n_keep)
+        keep_mask[idx[top]] = True
 
-    # Build old-to-new node id mapping
     node_map = torch.full((num_nodes,), -1, dtype=torch.long, device=device)
     node_map[keep_mask] = torch.arange(keep_mask.sum(), device=device)
 
-    new_x = x[keep_mask]
+    new_x     = x[keep_mask]
     new_batch = batch[keep_mask]
 
-    # Filter edges to kept nodes and remap
     if edge_index.size(1) > 0:
         src, dst = edge_index
         valid = keep_mask[src] & keep_mask[dst]
@@ -483,39 +290,31 @@ def prune_subgraph(x, edge_index, batch, keep_ratio: float = 0.5):
 
 class GRetriever(nn.Module):
     """
-    G-Retriever: GNN encoder + LLM with LoRA.
-    Encodes graph structure and injects it into LLM.
+    G-Retriever: GNN encoder + Llama-3.1-8B with LoRA.
+    Interface matches the NVIDIA reference implementation.
     """
 
-    def __init__(
-        self,
-        encoder_type: str = "gat",
-        config: dict = None
-    ):
+    def __init__(self, encoder_type: str = "gat", config: dict = None):
         super().__init__()
-
         config = config or DEFAULT_CONFIG
         self.config = config
         self.encoder_type = encoder_type
 
-        # GNN encoder
+        # ── GNN ──────────────────────────────────────────────────────────────
         print(f"Creating {encoder_type.upper()} encoder...")
-        self.gnn = get_gnn_encoder(encoder_type, config)
+        self.gnn = get_gnn(encoder_type, config)
 
-        # Quantization config
-        bnb_config = None
-        if config["load_in_4bit"]:
-            bnb_config = BitsAndBytesConfig(
-                load_in_4bit=True,
-                bnb_4bit_quant_type="nf4",
-                bnb_4bit_compute_dtype=torch.bfloat16,
-                bnb_4bit_use_double_quant=True,
-            )
+        # ── LLM (4-bit quantised) ────────────────────────────────────────────
+        print(f"Loading LLM: {config['llm_name']} ...")
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
+        ) if config["load_in_4bit"] else None
 
-        # Load LLM
-        print(f"Loading LLM: {config['llm_name']}...")
         self.tokenizer = AutoTokenizer.from_pretrained(config['llm_name'])
-        self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.tokenizer.pad_token    = self.tokenizer.eos_token
         self.tokenizer.padding_side = "right"
 
         self.llm = AutoModelForCausalLM.from_pretrained(
@@ -526,22 +325,22 @@ class GRetriever(nn.Module):
             trust_remote_code=True,
         )
 
-        # Apply LoRA
+        # ── LoRA ─────────────────────────────────────────────────────────────
         print("Applying LoRA...")
         self.llm = prepare_model_for_kbit_training(self.llm)
-
-        lora_config = LoraConfig(
+        lora_cfg = LoraConfig(
             r=config["lora_r"],
             lora_alpha=config["lora_alpha"],
             lora_dropout=config["lora_dropout"],
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
+                            "gate_proj", "up_proj", "down_proj"],
             bias="none",
             task_type="CAUSAL_LM",
         )
-        self.llm = get_peft_model(self.llm, lora_config)
+        self.llm = get_peft_model(self.llm, lora_cfg)
         self.llm.print_trainable_parameters()
 
-        # Projection: GNN output -> LLM embedding space
+        # ── Graph → LLM projection ───────────────────────────────────────────
         llm_hidden = self.llm.config.hidden_size
         self.graph_proj = nn.Sequential(
             nn.Linear(config["gnn_out"], llm_hidden),
@@ -550,470 +349,377 @@ class GRetriever(nn.Module):
             nn.Linear(llm_hidden, llm_hidden),
         )
 
-        # Move projection and GNN to same device as LLM
-        self.graph_proj = self.graph_proj.to(self.llm.device)
-        self.gnn = self.gnn.to(self.llm.device)
+        # Move GNN and projection to same device as LLM
+        lm_device = next(iter(self.llm.parameters())).device
+        self.graph_proj = self.graph_proj.to(lm_device)
+        self.gnn        = self.gnn.to(lm_device)
 
-    def encode_graph(self, x, edge_index, batch):
-        """Encode graph and project to LLM space."""
-        graph_emb = self.gnn(x, edge_index, batch)          # [batch_size, gnn_out]
-        graph_emb = self.graph_proj(graph_emb.float())       # float32 through proj
-        # Cast to match LLM embedding dtype (bfloat16 with 4-bit quant)
-        target_dtype = self.llm.get_input_embeddings().weight.dtype
-        return graph_emb.unsqueeze(1).to(target_dtype)       # [batch_size, 1, llm_hidden]
+    # ── Internal helpers ──────────────────────────────────────────────────────
 
-    def forward(self, x, edge_index, batch, input_ids, attention_mask, labels=None):
-        device = self.llm.device
-        x = x.to(device)
-        edge_index = edge_index.to(device)
-        batch = batch.to(device)
-        input_ids = input_ids.to(device)
-        attention_mask = attention_mask.to(device)
-        if labels is not None:
-            labels = labels.to(device)
+    def _encode_graph(self, x, edge_index, batch):
+        """GNN → pool → project → cast to LLM dtype → [B, 1, H]."""
+        node_emb  = self.gnn(x, edge_index)                          # [N, gnn_out]
+        graph_emb = global_mean_pool(node_emb, batch)                 # [B, gnn_out]
+        graph_emb = self.graph_proj(graph_emb.float())                # [B, llm_hidden]
+        dtype     = self.llm.get_input_embeddings().weight.dtype
+        return graph_emb.to(dtype).unsqueeze(1)                       # [B, 1, llm_hidden]
 
-        # Encode graph
-        graph_emb = self.encode_graph(x, edge_index, batch)  # [B, 1, H]
-
-        # Get text embeddings
-        text_emb = self.llm.get_input_embeddings()(input_ids)  # [B, L, H]
-
-        # Prepend graph embedding to text
-        inputs_embeds = torch.cat([graph_emb, text_emb], dim=1)  # [B, 1+L, H]
-
-        # Adjust attention mask
-        graph_mask = torch.ones(
-            (attention_mask.size(0), 1),
-            device=device,
-            dtype=attention_mask.dtype
-        )
-        attention_mask = torch.cat([graph_mask, attention_mask], dim=1)
-
-        # Adjust labels (pad with -100 for graph token)
-        if labels is not None:
-            label_pad = torch.full(
-                (labels.size(0), 1),
-                -100,
-                device=device,
-                dtype=labels.dtype
-            )
-            labels = torch.cat([label_pad, labels], dim=1)
-
-        outputs = self.llm(
-            inputs_embeds=inputs_embeds,
-            attention_mask=attention_mask,
-            labels=labels,
-            return_dict=True,
-        )
-
-        return outputs
-
-    @torch.no_grad()
-    def generate(self, x, edge_index, batch, input_ids, attention_mask, max_new_tokens=64):
-        """GNN + LLM generation (g_retriever / subgraph_pruning modes)."""
-        device = self.llm.device
-        x = x.to(device)
-        edge_index = edge_index.to(device)
-        batch = batch.to(device)
-        input_ids = input_ids.to(device)
-        attention_mask = attention_mask.to(device)
-
-        graph_emb = self.encode_graph(x, edge_index, batch)
-        text_emb = self.llm.get_input_embeddings()(input_ids)
-        inputs_embeds = torch.cat([graph_emb, text_emb], dim=1)
-
-        graph_mask = torch.ones(
-            (attention_mask.size(0), 1),
-            device=device,
-            dtype=attention_mask.dtype
-        )
-        attention_mask = torch.cat([graph_mask, attention_mask], dim=1)
-
-        outputs = self.llm.generate(
-            inputs_embeds=inputs_embeds,
-            attention_mask=attention_mask,
-            max_new_tokens=max_new_tokens,
-            pad_token_id=self.tokenizer.eos_token_id,
-            do_sample=False,
-            num_beams=1,
-        )
-
-        return outputs
-
-    @torch.no_grad()
-    def generate_baseline(self, input_ids, attention_mask, max_new_tokens=64):
-        """LLM-only generation — no graph encoding (baseline mode)."""
-        device = self.llm.device
-        input_ids = input_ids.to(device)
-        attention_mask = attention_mask.to(device)
-
-        outputs = self.llm.generate(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            max_new_tokens=max_new_tokens,
-            pad_token_id=self.tokenizer.eos_token_id,
-            do_sample=False,
-            num_beams=1,
-        )
-        return outputs
-
-    @torch.no_grad()
-    def generate_pipeline(
-        self,
-        x, edge_index, batch,
-        questions: List[str],
-        node_texts: Optional[List] = None,
-        max_new_tokens: int = 64,
-    ):
-        """
-        GNN + LLM generation with node descriptions injected into the prompt
-        (pipeline mode).
-        """
-        device = self.llm.device
-        x = x.to(device)
-        edge_index = edge_index.to(device)
-        batch = batch.to(device)
-
-        # Encode graph
-        graph_emb = self.encode_graph(x, edge_index, batch)  # [B, 1, H]
-
-        # Build augmented prompts
-        augmented_prompts = []
-        unique_batches = batch.unique().tolist()
-        for i, (b, q) in enumerate(zip(unique_batches, questions)):
-            if node_texts and node_texts[i] is not None:
-                texts = node_texts[i]
-                desc = "\n".join(f"- {t}" for t in texts[:10])
-                prompt = f"Graph context:\n{desc}\n\nQuestion: {q}\n\nAnswer:"
+    def _build_prompts(self, questions, desc, include_desc=False):
+        prompts = []
+        for q, d in zip(questions, desc):
+            if include_desc and d:
+                prompts.append(f"Context:\n{d}\n\nQuestion: {q}\n\nAnswer:")
             else:
-                num_nodes = int((batch == b).sum().item())
-                prompt = f"Graph context: {num_nodes} nodes.\n\nQuestion: {q}\n\nAnswer:"
-            augmented_prompts.append(prompt)
+                prompts.append(f"Question: {q}\n\nAnswer:")
+        return prompts
 
-        # Tokenize augmented prompts
-        enc = self.tokenizer(
-            augmented_prompts,
+    def _tokenize(self, texts, max_length=None):
+        max_length = max_length or self.config["max_txt_len"]
+        return self.tokenizer(
+            texts,
             truncation=True,
-            max_length=self.config['max_length'],
+            max_length=max_length,
             padding='max_length',
             return_tensors='pt',
         )
-        aug_input_ids = enc['input_ids'].to(device)
-        aug_attention_mask = enc['attention_mask'].to(device)
 
-        text_emb = self.llm.get_input_embeddings()(aug_input_ids)
-        inputs_embeds = torch.cat([graph_emb, text_emb], dim=1)
+    # ── Training forward (always g_retriever mode) ────────────────────────────
 
-        graph_mask = torch.ones(
-            (aug_attention_mask.size(0), 1),
-            device=device,
-            dtype=aug_attention_mask.dtype,
+    def forward(self, questions, x, edge_index, batch, labels,
+                edge_attr=None, desc=None):
+        """Compute cross-entropy loss. Called during training."""
+        device = next(iter(self.llm.parameters())).device
+        x          = x.to(device)
+        edge_index = edge_index.to(device)
+        batch      = batch.to(device)
+
+        desc = desc or [''] * len(questions)
+
+        # Build full text: prompt + answer
+        prompts = self._build_prompts(questions, desc, include_desc=False)
+        full_texts = [p + ' ' + l for p, l in zip(prompts, labels)]
+
+        prompt_enc = self._tokenize(prompts)
+        full_enc   = self._tokenize(full_texts)
+
+        input_ids      = full_enc['input_ids'].to(device)
+        attention_mask = full_enc['attention_mask'].to(device)
+
+        # Labels: mask prompt tokens with -100
+        lm_labels = input_ids.clone()
+        for i, pmask in enumerate(prompt_enc['attention_mask']):
+            prompt_len = int(pmask.sum().item())
+            lm_labels[i, :prompt_len] = -100
+
+        # Encode graph and prepend to embeddings
+        graph_emb  = self._encode_graph(x, edge_index, batch)         # [B, 1, H]
+        text_emb   = self.llm.get_input_embeddings()(input_ids)        # [B, L, H]
+        inputs_emb = torch.cat([graph_emb, text_emb], dim=1)          # [B, 1+L, H]
+
+        graph_mask     = torch.ones(graph_emb.size(0), 1, device=device,
+                                    dtype=attention_mask.dtype)
+        attention_mask = torch.cat([graph_mask, attention_mask], dim=1)
+
+        label_pad = torch.full((lm_labels.size(0), 1), -100,
+                               device=device, dtype=lm_labels.dtype)
+        lm_labels = torch.cat([label_pad, lm_labels], dim=1)
+
+        outputs = self.llm(
+            inputs_embeds=inputs_emb,
+            attention_mask=attention_mask,
+            labels=lm_labels,
+            return_dict=True,
         )
-        aug_attention_mask = torch.cat([graph_mask, aug_attention_mask], dim=1)
+        return outputs.loss
 
-        outputs = self.llm.generate(
-            inputs_embeds=inputs_embeds,
-            attention_mask=aug_attention_mask,
-            max_new_tokens=max_new_tokens,
-            pad_token_id=self.tokenizer.eos_token_id,
-            do_sample=False,
-            num_beams=1,
-        )
-        return outputs
+    # ── Inference ─────────────────────────────────────────────────────────────
+
+    @torch.no_grad()
+    def inference(self, questions, x, edge_index, batch,
+                  edge_attr=None, desc=None, mode='g_retriever'):
+        """
+        Generate predictions. Returns list of prediction strings.
+
+        mode:
+          'g_retriever'     – full GNN + LLM  (default, matches reference)
+          'subgraph_pruning' – prune top-50% nodes then GNN + LLM
+          'pipeline'         – GNN + LLM with desc injected in prompt
+          'baseline'         – LLM only, no GNN (uses desc as context)
+        """
+        device = next(iter(self.llm.parameters())).device
+        desc   = desc or [''] * len(questions)
+
+        include_desc = (mode in ('baseline', 'pipeline'))
+        prompts      = self._build_prompts(questions, desc, include_desc)
+        enc          = self._tokenize(prompts)
+        input_ids    = enc['input_ids'].to(device)
+        attn_mask    = enc['attention_mask'].to(device)
+
+        if mode == 'baseline':
+            outputs = self.llm.generate(
+                input_ids=input_ids,
+                attention_mask=attn_mask,
+                max_new_tokens=self.config['max_new_tokens'],
+                pad_token_id=self.tokenizer.eos_token_id,
+                do_sample=False,
+            )
+            # Decode only newly generated tokens
+            gen_tokens = outputs[:, input_ids.size(1):]
+
+        else:
+            x          = x.to(device)
+            edge_index = edge_index.to(device)
+            batch      = batch.to(device)
+
+            if mode == 'subgraph_pruning':
+                x, edge_index, batch = prune_subgraph(x, edge_index, batch)
+
+            graph_emb  = self._encode_graph(x, edge_index, batch)
+            text_emb   = self.llm.get_input_embeddings()(input_ids)
+            inputs_emb = torch.cat([graph_emb, text_emb], dim=1)
+
+            graph_mask = torch.ones(graph_emb.size(0), 1, device=device,
+                                    dtype=attn_mask.dtype)
+            attn_mask  = torch.cat([graph_mask, attn_mask], dim=1)
+
+            outputs = self.llm.generate(
+                inputs_embeds=inputs_emb,
+                attention_mask=attn_mask,
+                max_new_tokens=self.config['max_new_tokens'],
+                pad_token_id=self.tokenizer.eos_token_id,
+                do_sample=False,
+            )
+            gen_tokens = outputs  # generate with inputs_embeds returns only new tokens
+
+        preds = self.tokenizer.batch_decode(gen_tokens, skip_special_tokens=True)
+        return [p.strip() for p in preds]
 
 
 # =============================================================================
-# METRICS
+# METRICS  (aligned with reference compute_metrics)
 # =============================================================================
 
-def compute_exact_match(predictions: List[str], ground_truths: List[str]) -> float:
-    """Compute exact match accuracy."""
-    correct = 0
-    for pred, gt in zip(predictions, ground_truths):
-        pred_clean = pred.strip().lower()
-        gt_clean = gt.strip().lower()
-        if pred_clean == gt_clean or gt_clean in pred_clean:
-            correct += 1
-    return correct / len(predictions) * 100
-
-
-def compute_hits_at_k(predictions: List[str], ground_truths: List[str], k: int = 1) -> float:
-    """Compute Hits@K metric."""
-    hits = 0
-    for pred, gt in zip(predictions, ground_truths):
-        pred_list = [p.strip().lower() for p in pred.split('|')][:k]
-        gt_list = [g.strip().lower() for g in gt.split('|')]
-
-        if any(g in ' '.join(pred_list) for g in gt_list):
-            hits += 1
-
-    return hits / len(predictions) * 100
-
-
-def compute_recall_at_20(predictions: List[str], ground_truths: List[str]) -> float:
+def compute_metrics(predictions, ground_truths):
     """
-    Recall@20: fraction of ground-truth answers recalled within
-    the first 20 whitespace tokens of the prediction.
+    Evaluate predictions against ground truth labels.
+    Both are lists of '|'-separated entity name strings.
+    Returns dict of all metrics (as fractions, not percentages).
     """
-    recalls = []
-    for pred, gt in zip(predictions, ground_truths):
-        pred_tokens = pred.lower().split()[:20]
-        gt_parts = [g.strip().lower() for g in gt.split('|')]
+    all_hit          = []
+    all_hit1         = []
+    all_hit5         = []
+    all_hit_any      = []
+    all_precision    = []
+    all_recall       = []
+    all_recall_at_20 = []
+    all_rr           = []
+    all_f1           = []
 
-        recalled = sum(
-            1 for g in gt_parts
-            if any(g in tok or tok in g for tok in pred_tokens)
-        )
-        recalls.append(recalled / max(len(gt_parts), 1))
+    for pred_str, label_str in zip(predictions, ground_truths):
+        # Split on '|' to get ranked candidate list (matches reference)
+        pred  = [p.strip().lower() for p in pred_str.split('|') if p.strip()]
+        label = [l.strip().lower() for l in label_str.split('|') if l.strip()]
 
-    return float(np.mean(recalls)) * 100
-
-
-def compute_mrr(predictions: List[str], ground_truths: List[str]) -> float:
-    """
-    Mean Reciprocal Rank: reciprocal of the 1-based token position
-    where the first ground-truth match is found in the prediction.
-    Returns 0 for a query if no match is found.
-    """
-    rr_scores = []
-    for pred, gt in zip(predictions, ground_truths):
-        pred_tokens = pred.lower().split()
-        gt_parts = [g.strip().lower() for g in gt.split('|')]
-
-        rr = 0.0
-        for rank, tok in enumerate(pred_tokens, start=1):
-            if any(g in tok or tok in g for g in gt_parts):
-                rr = 1.0 / rank
-                break
-        rr_scores.append(rr)
-
-    return float(np.mean(rr_scores)) * 100
-
-
-def compute_f1(predictions: List[str], ground_truths: List[str]) -> float:
-    """Compute token-level F1 score."""
-    f1_scores = []
-
-    for pred, gt in zip(predictions, ground_truths):
-        pred_tokens = set(pred.lower().split())
-        gt_tokens = set(gt.lower().split())
-
-        if len(pred_tokens) == 0 or len(gt_tokens) == 0:
-            f1_scores.append(0.0)
+        if not pred or not label:
+            for lst in [all_hit, all_hit1, all_hit5, all_hit_any,
+                        all_precision, all_recall, all_recall_at_20, all_rr, all_f1]:
+                lst.append(0)
             continue
 
-        common = pred_tokens & gt_tokens
-        precision = len(common) / len(pred_tokens) if pred_tokens else 0
-        recall = len(common) / len(gt_tokens) if gt_tokens else 0
+        # Substring hit@1 (reference style: regex find)
+        try:
+            hit = len(re.findall(re.escape(pred[0]), ' | '.join(label))) > 0
+        except Exception:
+            hit = False
+        all_hit.append(int(hit))
 
-        if precision + recall > 0:
-            f1 = 2 * precision * recall / (precision + recall)
-        else:
-            f1 = 0.0
+        matches        = set(pred) & set(label)
+        matches_at_20  = set(pred[:20]) & set(label)
 
-        f1_scores.append(f1)
+        precision     = len(matches)       / len(set(pred))
+        recall        = len(matches)       / len(set(label))
+        recall_at_20  = len(matches_at_20) / len(set(label))
+        f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0
 
-    return np.mean(f1_scores) * 100
+        hit1  = int(pred[0] in label)
+        hit5  = int(len(set(pred[:5]) & set(label)) > 0)
 
+        rr = 0.0
+        for rank, p in enumerate(pred, start=1):
+            if p in label:
+                rr = 1.0 / rank
+                break
 
-# =============================================================================
-# TRAINING
-# =============================================================================
+        all_hit1.append(hit1)
+        all_hit5.append(hit5)
+        all_hit_any.append(int(precision > 0))
+        all_precision.append(precision)
+        all_recall.append(recall)
+        all_recall_at_20.append(recall_at_20)
+        all_rr.append(rr)
+        all_f1.append(f1)
 
-def train_epoch(model, dataloader, optimizer, scheduler, epoch, config):
-    model.train()
-    total_loss = 0
-    num_batches = 0
-
-    pbar = tqdm(dataloader, desc=f"Epoch {epoch}")
-
-    for batch_data in pbar:
-        optimizer.zero_grad()
-
-        outputs = model(
-            x=batch_data['x'],
-            edge_index=batch_data['edge_index'],
-            batch=batch_data['batch'],
-            input_ids=batch_data['input_ids'],
-            attention_mask=batch_data['attention_mask'],
-            labels=batch_data['labels'],
-        )
-
-        loss = outputs.loss
-        loss.backward()
-
-        torch.nn.utils.clip_grad_norm_(
-            model.parameters(),
-            max_norm=config["max_grad_norm"]
-        )
-
-        optimizer.step()
-        scheduler.step()
-
-        total_loss += loss.item()
-        num_batches += 1
-
-        pbar.set_postfix({
-            'loss': f'{loss.item():.4f}',
-            'lr': f'{scheduler.get_last_lr()[0]:.2e}'
-        })
-
-    return total_loss / num_batches
-
-
-@torch.no_grad()
-def evaluate(model, dataloader, config, mode: str = 'g_retriever'):
-    """
-    Evaluate model on `dataloader`.
-
-    mode choices:
-      - 'baseline'        : LLM only, no GNN
-      - 'subgraph_pruning': prune to top-50% nodes by degree, then GNN+LLM
-      - 'g_retriever'     : full GNN+LLM (default)
-      - 'pipeline'        : GNN+LLM with node descriptions added to prompt
-
-    Returns metrics dict with Hits@1, Hits@5, Recall@20, MRR (all as %).
-    """
-    model.eval()
-
-    all_preds = []
-    all_gts = []
-
-    for batch_data in tqdm(dataloader, desc=f"Evaluating [{mode}]"):
-        if mode == 'baseline':
-            outputs = model.generate_baseline(
-                input_ids=batch_data['input_ids'],
-                attention_mask=batch_data['attention_mask'],
-                max_new_tokens=config["max_new_tokens"],
-            )
-
-        elif mode == 'subgraph_pruning':
-            pruned_x, pruned_edge_index, pruned_batch = prune_subgraph(
-                batch_data['x'],
-                batch_data['edge_index'],
-                batch_data['batch'],
-                keep_ratio=0.5,
-            )
-            outputs = model.generate(
-                x=pruned_x,
-                edge_index=pruned_edge_index,
-                batch=pruned_batch,
-                input_ids=batch_data['input_ids'],
-                attention_mask=batch_data['attention_mask'],
-                max_new_tokens=config["max_new_tokens"],
-            )
-
-        elif mode == 'pipeline':
-            outputs = model.generate_pipeline(
-                x=batch_data['x'],
-                edge_index=batch_data['edge_index'],
-                batch=batch_data['batch'],
-                questions=batch_data['questions'],
-                node_texts=batch_data.get('node_texts'),
-                max_new_tokens=config["max_new_tokens"],
-            )
-
-        else:  # g_retriever (default)
-            outputs = model.generate(
-                x=batch_data['x'],
-                edge_index=batch_data['edge_index'],
-                batch=batch_data['batch'],
-                input_ids=batch_data['input_ids'],
-                attention_mask=batch_data['attention_mask'],
-                max_new_tokens=config["max_new_tokens"],
-            )
-
-        # Decode
-        preds = model.tokenizer.batch_decode(outputs, skip_special_tokens=True)
-
-        # Extract only the answer part
-        clean_preds = []
-        for pred in preds:
-            if "Answer:" in pred:
-                pred = pred.split("Answer:")[-1].strip()
-            clean_preds.append(pred)
-
-        all_preds.extend(clean_preds)
-        all_gts.extend(batch_data['answer_strs'])
-
-    metrics = {
-        'hits@1':      compute_hits_at_k(all_preds, all_gts, k=1),
-        'hits@5':      compute_hits_at_k(all_preds, all_gts, k=5),
-        'recall@20':   compute_recall_at_20(all_preds, all_gts),
-        'mrr':         compute_mrr(all_preds, all_gts),
+    n = len(predictions)
+    return {
+        'hit@1':       sum(all_hit)          / n,
+        'exact_hit@1': sum(all_hit1)         / n,
+        'hit@5':       sum(all_hit5)         / n,
+        'hit@any':     sum(all_hit_any)      / n,
+        'precision':   sum(all_precision)    / n,
+        'recall':      sum(all_recall)       / n,
+        'recall@20':   sum(all_recall_at_20) / n,
+        'mrr':         sum(all_rr)           / n,
+        'f1':          sum(all_f1)           / n,
     }
 
-    return metrics, all_preds, all_gts
+
+def print_metrics(metrics: dict, prefix: str = ''):
+    print(f"{prefix}F1:              {metrics['f1']:.4f}")
+    print(f"{prefix}Precision:       {metrics['precision']:.4f}")
+    print(f"{prefix}Recall:          {metrics['recall']:.4f}")
+    print(f"{prefix}Substring hit@1: {metrics['hit@1']:.4f}")
+    print(f"{prefix}Exact hit@1:     {metrics['exact_hit@1']:.4f}")
+    print(f"{prefix}Hit@5:           {metrics['hit@5']:.4f}")
+    print(f"{prefix}Hit@any:         {metrics['hit@any']:.4f}")
+    print(f"{prefix}Recall@20:       {metrics['recall@20']:.4f}")
+    print(f"{prefix}MRR:             {metrics['mrr']:.4f}")
 
 
 # =============================================================================
 # RESULTS TABLE
 # =============================================================================
 
-def print_results_table(results_by_method: Dict[str, Dict]):
-    """Print a formatted comparison table of all evaluated methods."""
-    ordered_methods = [
+def print_results_table(results: dict):
+    order = [
         "Pipeline",
-        "G-Retriever (GAT)",
-        "G-Retriever (Transformer)",
-        "G-Retriever (GCN)",
+        f"G-Retriever (GAT)",
+        f"G-Retriever (Transformer)",
+        f"G-Retriever (GCN)",
         "Subgraph Pruning",
-        "Baseline",
+        "Baseline (LLM only)",
     ]
-
-    col_method = 25
-    print("\n" + "=" * 70)
-    print(
-        f"{'Method':<{col_method}}| "
-        f"{'Hits@1':>6} | "
-        f"{'Hits@5':>6} | "
-        f"{'Recall@20':>9} | "
-        f"{'MRR':>6}"
-    )
-    print("-" * col_method + "|" + "-" * 8 + "|" + "-" * 8 + "|" + "-" * 11 + "|" + "-" * 7)
-
-    for method in ordered_methods:
-        if method in results_by_method:
-            m = results_by_method[method]
-            print(
-                f"{method:<{col_method}}| "
-                f"{m.get('hits@1', 0.0):>6.2f} | "
-                f"{m.get('hits@5', 0.0):>6.2f} | "
-                f"{m.get('recall@20', 0.0):>9.2f} | "
-                f"{m.get('mrr', 0.0):>6.2f}"
-            )
+    W = 26
+    print("\n" + "=" * 78)
+    print(f"{'Method':<{W}}| {'Hit@1':>7} | {'Hit@5':>7} | {'Recall@20':>9} | {'MRR':>7} | {'F1':>7}")
+    print("-" * W + "|" + "-" * 9 + "|" + "-" * 9 + "|" + "-" * 11 + "|" + "-" * 9 + "|" + "-" * 8)
+    for method in order:
+        if method in results:
+            m = results[method]
+            print(f"{method:<{W}}| "
+                  f"{m['exact_hit@1']*100:>6.2f}% | "
+                  f"{m['hit@5']*100:>6.2f}% | "
+                  f"{m['recall@20']*100:>8.2f}% | "
+                  f"{m['mrr']*100:>6.2f}% | "
+                  f"{m['f1']*100:>6.2f}%")
         else:
-            print(
-                f"{method:<{col_method}}| "
-                f"{'N/A':>6} | "
-                f"{'N/A':>6} | "
-                f"{'N/A':>9} | "
-                f"{'N/A':>6}"
+            print(f"{method:<{W}}| {'N/A':>7} | {'N/A':>7} | {'N/A':>9} | {'N/A':>7} | {'N/A':>7}")
+    print("=" * 78)
+
+
+# =============================================================================
+# LR SCHEDULE  (cosine with warmup — exact reference implementation)
+# =============================================================================
+
+def adjust_learning_rate(param_group, lr_base, epoch, num_epochs,
+                         warmup_epochs=1, min_lr=5e-6):
+    if epoch < warmup_epochs:
+        lr = lr_base
+    else:
+        lr = min_lr + (lr_base - min_lr) * 0.5 * (
+            1.0 + math.cos(
+                math.pi * (epoch - warmup_epochs) / (num_epochs - warmup_epochs)
             )
+        )
+    param_group['lr'] = lr
+    return lr
 
-    print("=" * 70)
+
+# =============================================================================
+# TRAINING
+# =============================================================================
+
+def train_epoch(model, loader, optimizer, epoch, config):
+    model.train()
+    total_loss = 0
+    num_batches = 0
+    grad_steps = config['grad_steps']
+
+    pbar = tqdm(loader, desc=f"Epoch {epoch}")
+    optimizer.zero_grad()
+
+    for step, batch in enumerate(pbar):
+        loss = model(
+            questions  = batch.question,
+            x          = batch.x,
+            edge_index = batch.edge_index,
+            batch      = batch.batch,
+            labels     = batch.label,
+            edge_attr  = getattr(batch, 'edge_attr', None),
+            desc       = batch.desc if hasattr(batch, 'desc') else None,
+        )
+
+        loss.backward()
+
+        if (step + 1) % grad_steps == 0:
+            torch.nn.utils.clip_grad_norm_(
+                [p for p in model.parameters() if p.requires_grad],
+                max_norm=config['max_grad_norm'],
+            )
+            adjust_learning_rate(
+                optimizer.param_groups[0],
+                lr_base=config['lr'],
+                epoch=step / len(loader) + epoch,
+                num_epochs=config['epochs'],
+                warmup_epochs=config['warmup_epochs'],
+                min_lr=config['min_lr'],
+            )
+            optimizer.step()
+            optimizer.zero_grad()
+
+        total_loss  += loss.item()
+        num_batches += 1
+        pbar.set_postfix({'loss': f'{loss.item():.4f}',
+                          'lr':   f'{optimizer.param_groups[0]["lr"]:.2e}'})
+
+    return total_loss / max(num_batches, 1)
 
 
-def evaluate_all_modes(model, test_loader, config, encoder_type: str) -> Dict[str, Dict]:
-    """
-    Run evaluation with all four modes and return a results dict keyed by
-    the display name used in the results table.
-    """
-    mode_to_label = {
-        'baseline':        'Baseline',
-        'subgraph_pruning':'Subgraph Pruning',
-        'g_retriever':     f'G-Retriever ({encoder_type.upper()})',
-        'pipeline':        'Pipeline',
+@torch.no_grad()
+def evaluate_loader(model, loader, config, mode='g_retriever'):
+    model.eval()
+    all_preds = []
+    all_gts   = []
+
+    for batch in tqdm(loader, desc=f"Eval [{mode}]"):
+        preds = model.inference(
+            questions  = batch.question,
+            x          = batch.x,
+            edge_index = batch.edge_index,
+            batch      = batch.batch,
+            edge_attr  = getattr(batch, 'edge_attr', None),
+            desc       = batch.desc if hasattr(batch, 'desc') else None,
+            mode       = mode,
+        )
+        all_preds.extend(preds)
+        all_gts.extend(batch.label)
+
+    return compute_metrics(all_preds, all_gts), all_preds, all_gts
+
+
+def evaluate_all_modes(model, loader, config, encoder_type):
+    """Run all 4 modes and return results dict keyed by display name."""
+    modes = {
+        'baseline':         'Baseline (LLM only)',
+        'subgraph_pruning': 'Subgraph Pruning',
+        'g_retriever':      f'G-Retriever ({encoder_type.upper()})',
+        'pipeline':         'Pipeline',
     }
-
     results = {}
-    for mode, label in mode_to_label.items():
-        print(f"\n--- Evaluating: {label} ---")
-        metrics, _, _ = evaluate(model, test_loader, config, mode=mode)
+    for mode, label in modes.items():
+        print(f"\n--- {label} ---")
+        metrics, _, _ = evaluate_loader(model, loader, config, mode=mode)
         results[label] = metrics
-        print(f"  Hits@1={metrics['hits@1']:.2f}  Hits@5={metrics['hits@5']:.2f}  "
-              f"Recall@20={metrics['recall@20']:.2f}  MRR={metrics['mrr']:.2f}")
-
+        print_metrics(metrics, prefix='  ')
     return results
 
 
@@ -1022,274 +728,170 @@ def evaluate_all_modes(model, test_loader, config, encoder_type: str) -> Dict[st
 # =============================================================================
 
 def main():
-    parser = argparse.ArgumentParser(description="Train G-Retriever with GAT, Transformer, or GCN encoder")
-
-    # Data
-    parser.add_argument('--data_dir', type=str, default='data/processed/train',
-                        help='Directory containing pre-computed subgraphs')
-    parser.add_argument('--output_dir', type=str, default='results',
-                        help='Output directory for results')
-
-    # Model
-    parser.add_argument('--encoder', type=str, default='gat',
-                        choices=['gat', 'transformer', 'gcn'],
-                        help='GNN encoder type')
-    parser.add_argument('--llm', type=str, default='meta-llama/Llama-3.1-8B-Instruct',
-                        help='LLM model name')
-
-    # Mode
-    parser.add_argument('--mode', type=str, default='g_retriever',
-                        choices=['baseline', 'subgraph_pruning', 'g_retriever', 'pipeline'],
-                        help=(
-                            'Evaluation/inference mode: '
-                            'baseline=LLM only; '
-                            'subgraph_pruning=prune top-50%% nodes then GNN+LLM; '
-                            'g_retriever=full GNN+LLM; '
-                            'pipeline=GNN+LLM with node descriptions in prompt'
-                        ))
-
-    # Training
-    parser.add_argument('--epochs', type=int, default=3)
-    parser.add_argument('--batch_size', type=int, default=4)
-    parser.add_argument('--lr', type=float, default=1e-4)
-    parser.add_argument('--seed', type=int, default=42)
-
-    # Evaluation
-    parser.add_argument('--eval_only', action='store_true')
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--data_dir',   type=str, default='data/processed')
+    parser.add_argument('--output_dir', type=str, default='results')
+    parser.add_argument('--encoder',    type=str, default='gat',
+                        choices=['gat', 'transformer', 'gcn'])
+    parser.add_argument('--llm',        type=str,
+                        default='meta-llama/Llama-3.1-8B-Instruct')
+    parser.add_argument('--epochs',     type=int, default=None)
+    parser.add_argument('--batch_size', type=int, default=None)
+    parser.add_argument('--lr',         type=float, default=None)
+    parser.add_argument('--seed',       type=int, default=42)
+    parser.add_argument('--eval_only',  action='store_true')
     parser.add_argument('--checkpoint', type=str, default=None)
-
     args = parser.parse_args()
 
-    # Update config
+    # Build config
     config = DEFAULT_CONFIG.copy()
     config['llm_name'] = args.llm
-    config['epochs'] = args.epochs
-    config['batch_size'] = args.batch_size
-    config['lr'] = args.lr
+    if args.epochs     is not None: config['epochs']     = args.epochs
+    if args.batch_size is not None: config['batch_size'] = args.batch_size
+    if args.lr         is not None: config['lr']         = args.lr
 
-    # Set seed
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
 
-    # Create output directory
     output_dir = os.path.join(args.output_dir, f"{args.encoder}_seed{args.seed}")
     os.makedirs(output_dir, exist_ok=True)
 
-    print("="*60)
-    print(f"G-Retriever Training")
-    print(f"  Encoder: {args.encoder.upper()}")
-    print(f"  Mode:    {args.mode}")
-    print(f"  Seed:    {args.seed}")
-    print(f"  Output:  {output_dir}")
-    print("="*60)
-
-    # Device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
+    print("=" * 60)
+    print(f"G-Retriever  |  Encoder: {args.encoder.upper()}  |  Seed: {args.seed}")
     if torch.cuda.is_available():
-        print(f"GPU: {torch.cuda.get_device_name(0)}")
-        print(f"Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB")
+        print(f"GPU: {torch.cuda.get_device_name(0)}  "
+              f"({torch.cuda.get_device_properties(0).total_memory/1e9:.1f} GB)")
+    print("=" * 60)
 
-    # Create model (always create GRetriever; baseline mode just skips GNN at inference)
+    # ── Datasets ──────────────────────────────────────────────────────────────
+    print("\nLoading datasets...")
+    train_ds = SubgraphDataset(args.data_dir, split='train')
+    val_ds   = SubgraphDataset(args.data_dir, split='val')
+    test_ds  = SubgraphDataset(args.data_dir, split='test')
+
+    train_loader = DataLoader(train_ds, batch_size=config['batch_size'],
+                              shuffle=True,  drop_last=True,  pin_memory=True)
+    val_loader   = DataLoader(val_ds,   batch_size=config['eval_batch_size'],
+                              shuffle=False, drop_last=False, pin_memory=True)
+    test_loader  = DataLoader(test_ds,  batch_size=config['eval_batch_size'],
+                              shuffle=False, drop_last=False, pin_memory=True)
+
+    # ── Model ─────────────────────────────────────────────────────────────────
     print("\nCreating model...")
     model = GRetriever(encoder_type=args.encoder, config=config)
 
-    # Create dataset
-    print("\nLoading dataset...")
-    dataset = PrecomputedSubgraphDataset(
-        data_dir=args.data_dir,
-        tokenizer=model.tokenizer,
-        max_length=config['max_length']
-    )
-
-    # Split: 80% train, 10% val, 10% test
-    total = len(dataset)
-    train_size = int(0.8 * total)
-    val_size = int(0.1 * total)
-    test_size = total - train_size - val_size
-
-    train_dataset, val_dataset, test_dataset = torch.utils.data.random_split(
-        dataset,
-        [train_size, val_size, test_size],
-        generator=torch.Generator().manual_seed(args.seed)
-    )
-
-    print(f"  Train: {len(train_dataset)}")
-    print(f"  Val: {len(val_dataset)}")
-    print(f"  Test: {len(test_dataset)}")
-
-    # Dataloaders
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=config['batch_size'],
-        shuffle=True,
-        collate_fn=collate_fn,
-        num_workers=4,
-        pin_memory=True,
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=config['batch_size'],
-        shuffle=False,
-        collate_fn=collate_fn,
-        num_workers=4,
-    )
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=config['batch_size'],
-        shuffle=False,
-        collate_fn=collate_fn,
-        num_workers=4,
-    )
-
-    # Load checkpoint if provided
     if args.checkpoint:
-        print(f"\nLoading checkpoint: {args.checkpoint}")
-        checkpoint = torch.load(args.checkpoint, map_location='cpu')
-        model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+        print(f"Loading checkpoint: {args.checkpoint}")
+        ckpt = torch.load(args.checkpoint, map_location='cpu')
+        model.load_state_dict(ckpt['model_state_dict'], strict=False)
 
-    # Eval only mode
+    # ── Eval only ─────────────────────────────────────────────────────────────
     if args.eval_only:
-        print("\nRunning evaluation across all modes...")
         all_results = evaluate_all_modes(model, test_loader, config, args.encoder)
-
-        # Also load saved results for other encoder types, if available
-        for other_enc in ['gat', 'transformer', 'gcn']:
-            if other_enc == args.encoder:
+        # Merge saved results from other encoders if available
+        for enc in ['gat', 'transformer', 'gcn']:
+            if enc == args.encoder:
                 continue
-            label = f'G-Retriever ({other_enc.upper()})'
-            results_path = os.path.join(args.output_dir, f"{other_enc}_seed{args.seed}", 'results.json')
-            if os.path.exists(results_path):
-                with open(results_path) as f:
+            rpath = os.path.join(args.output_dir, f"{enc}_seed{args.seed}", 'results.json')
+            if os.path.exists(rpath):
+                with open(rpath) as f:
                     saved = json.load(f)
-                saved_metrics = saved.get('test_metrics', {})
-                if saved_metrics:
-                    all_results[label] = saved_metrics
-                    print(f"Loaded saved results for {label}")
-
+                label = f'G-Retriever ({enc.upper()})'
+                if saved.get('test_metrics'):
+                    all_results[label] = saved['test_metrics']
         print_results_table(all_results)
         return
 
-    # Optimizer (only trainable params)
-    trainable_params = [p for p in model.parameters() if p.requires_grad]
+    # ── Optimizer ─────────────────────────────────────────────────────────────
+    params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(
-        trainable_params,
-        lr=config['lr'],
-        weight_decay=config['weight_decay'],
+        [{'params': params, 'lr': config['lr'], 'weight_decay': config['weight_decay']}],
+        betas=(0.9, 0.95),
     )
 
-    # Scheduler
-    total_steps = len(train_loader) * config['epochs']
-    warmup_steps = int(config['warmup_ratio'] * total_steps)
-
-    scheduler = torch.optim.lr_scheduler.LinearLR(
-        optimizer,
-        start_factor=0.1,
-        end_factor=1.0,
-        total_iters=warmup_steps
-    )
-
-    # Training loop
-    best_metric = 0
+    # ── Training loop ─────────────────────────────────────────────────────────
+    best_val_loss = float('inf')
     history = []
+    start_time = time.time()
 
-    for epoch in range(1, config['epochs'] + 1):
-        print(f"\n{'='*60}")
-        print(f"Epoch {epoch}/{config['epochs']}")
-        print(f"{'='*60}")
+    for epoch in range(config['epochs']):
+        print(f"\n{'='*60}\nEpoch {epoch+1}/{config['epochs']}\n{'='*60}")
 
-        train_loss = train_epoch(model, train_loader, optimizer, scheduler, epoch, config)
+        train_loss = train_epoch(model, train_loader, optimizer, epoch, config)
         print(f"Train Loss: {train_loss:.4f}")
 
-        val_metrics, _, _ = evaluate(model, val_loader, config, mode=args.mode)
-        print(
-            f"Val  Hits@1={val_metrics['hits@1']:.2f}  "
-            f"Hits@5={val_metrics['hits@5']:.2f}  "
-            f"Recall@20={val_metrics['recall@20']:.2f}  "
-            f"MRR={val_metrics['mrr']:.2f}"
-        )
+        # Validation (loss only — fast)
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for batch in tqdm(val_loader, desc="Val loss"):
+                loss = model(
+                    questions  = batch.question,
+                    x          = batch.x,
+                    edge_index = batch.edge_index,
+                    batch      = batch.batch,
+                    labels     = batch.label,
+                    edge_attr  = getattr(batch, 'edge_attr', None),
+                    desc       = batch.desc if hasattr(batch, 'desc') else None,
+                )
+                val_loss += loss.item()
+        val_loss /= len(val_loader)
+        print(f"Val   Loss: {val_loss:.4f}")
 
-        history.append({
-            'epoch': epoch,
-            'train_loss': train_loss,
-            'val_metrics': val_metrics,
-        })
+        history.append({'epoch': epoch + 1, 'train_loss': train_loss, 'val_loss': val_loss})
 
-        # Save best model (by Hits@1)
-        if val_metrics['hits@1'] > best_metric:
-            best_metric = val_metrics['hits@1']
-
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
             torch.save({
-                'epoch': epoch,
+                'epoch': epoch + 1,
                 'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'val_metrics': val_metrics,
+                'val_loss': val_loss,
                 'config': config,
-                'args': vars(args),
             }, os.path.join(output_dir, 'best_model.pt'))
+            print(f"*** Saved best model (val_loss={best_val_loss:.4f}) ***")
 
-            print(f"*** Saved best model with Hits@1: {best_metric:.2f} ***")
-
-        gc.collect()
         torch.cuda.empty_cache()
 
-    # Final test evaluation — run all modes for the full comparison table
-    print("\n" + "="*60)
-    print("Final Test Evaluation (all modes)")
-    print("="*60)
+    print(f"\nTotal training time: {(time.time()-start_time)/60:.1f} min")
 
-    # Load best model
-    checkpoint = torch.load(os.path.join(output_dir, 'best_model.pt'), map_location='cpu')
-    model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+    # ── Final test evaluation (all 4 modes) ───────────────────────────────────
+    print("\n" + "="*60)
+    print("Final Test Evaluation — loading best checkpoint")
+    ckpt = torch.load(os.path.join(output_dir, 'best_model.pt'), map_location='cpu')
+    model.load_state_dict(ckpt['model_state_dict'], strict=False)
 
     all_results = evaluate_all_modes(model, test_loader, config, args.encoder)
 
-    # Load saved results from other encoder runs if they exist
-    for other_enc in ['gat', 'transformer', 'gcn']:
-        if other_enc == args.encoder:
+    # Merge other encoder results if available
+    for enc in ['gat', 'transformer', 'gcn']:
+        if enc == args.encoder:
             continue
-        label = f'G-Retriever ({other_enc.upper()})'
-        results_path = os.path.join(args.output_dir, f"{other_enc}_seed{args.seed}", 'results.json')
-        if os.path.exists(results_path):
-            with open(results_path) as f:
+        rpath = os.path.join(args.output_dir, f"{enc}_seed{args.seed}", 'results.json')
+        if os.path.exists(rpath):
+            with open(rpath) as f:
                 saved = json.load(f)
-            saved_metrics = saved.get('test_metrics', {})
-            if saved_metrics:
-                all_results[label] = saved_metrics
+            label = f'G-Retriever ({enc.upper()})'
+            if saved.get('test_metrics'):
+                all_results[label] = saved['test_metrics']
                 print(f"Loaded saved results for {label}")
 
     print_results_table(all_results)
 
-    # Use the trained mode's g_retriever metrics as the canonical test_metrics
+    # Save
     test_metrics = all_results.get(f'G-Retriever ({args.encoder.upper()})', {})
-
-    # Save final results
-    results = {
-        'encoder': args.encoder,
-        'mode': args.mode,
-        'seed': args.seed,
-        'config': config,
-        'history': history,
-        'test_metrics': test_metrics,
-        'all_mode_results': all_results,
-        'best_val_hits@1': best_metric,
-    }
-
     with open(os.path.join(output_dir, 'results.json'), 'w') as f:
-        json.dump(results, f, indent=2)
-
-    # Save predictions from the primary mode
-    _, test_preds, test_gts = evaluate(model, test_loader, config, mode=args.mode)
-    with open(os.path.join(output_dir, 'predictions.json'), 'w') as f:
         json.dump({
-            'predictions': test_preds[:100],
-            'ground_truths': test_gts[:100],
+            'encoder':      args.encoder,
+            'seed':         args.seed,
+            'config':       config,
+            'history':      history,
+            'test_metrics': test_metrics,
+            'all_results':  {k: v for k, v in all_results.items()},
         }, f, indent=2)
 
     print(f"\nResults saved to: {output_dir}")
-    print("Done!")
 
 
 if __name__ == '__main__':

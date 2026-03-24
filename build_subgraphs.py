@@ -95,6 +95,16 @@ def get_subgraph_rels(node_ids: List, driver: Driver) -> pd.DataFrame:
     return pd.DataFrame([rec.data() for rec in res.records])
 
 
+def get_answer_names(answer_ids: List[int], driver: Driver) -> str:
+    """Look up entity names for answer node IDs — no OpenAI needed."""
+    res = driver.execute_query(
+        "UNWIND $ids AS nodeId MATCH (n:_Entity_ {nodeId: nodeId}) RETURN n.name AS name",
+        parameters_={"ids": answer_ids}
+    )
+    names = [r.data()['name'] for r in res.records if r.data().get('name')]
+    return ' | '.join(names)
+
+
 def get_node_df(node_ids: List, rel_df: pd.DataFrame, driver: Driver) -> pd.DataFrame:
     all_ids = set(node_ids)
     if rel_df.shape[0] > 0:
@@ -162,13 +172,27 @@ def build_data(query: str, answer_ids: List[int], driver: Driver, debug: bool = 
     edge_index = torch.tensor([src_idx, tgt_idx], dtype=torch.long)
     edge_attr = torch.tensor(np.array(edge_embs), dtype=torch.float)
 
+    # Label: entity names separated by ' | '
+    label = get_answer_names(answer_ids, driver)
+    if not label:
+        return None
+
+    # Desc: node names as context string for the LLM prompt
+    desc_parts = []
+    for _, row in node_df.iterrows():
+        name = row.get('name') or ''
+        if name:
+            details = row.get('details') or ''
+            desc_parts.append(f"{name}: {details[:80]}" if details else name)
+    desc = '; '.join(desc_parts[:30])
+
     return Data(
         x=x,
         edge_index=edge_index,
         edge_attr=edge_attr,
         question=query,
-        answer=answer_ids,   # list of integer node IDs
-        desc='',
+        label=label,
+        desc=desc,
     )
 
 
