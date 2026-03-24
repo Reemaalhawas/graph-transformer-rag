@@ -374,6 +374,16 @@ def build_data(query: str, answer_ids: List[int], driver: Driver,
             desc_parts.append(f"{name}: {details[:80]}" if details else name)
     desc = '; '.join(desc_parts[:30])
 
+    # ── Safety: all components must be consistent ────────────────────────────
+    num_nodes = x.shape[0]
+    if edge_index.shape[1] > 0 and int(edge_index.max()) >= num_nodes:
+        return None   # corrupted graph — skip
+    if edge_attr.shape[0] != edge_index.shape[1]:
+        return None   # edge_attr / edge_index mismatch — skip
+    if x.shape[1] != 1536 or (edge_attr.shape[0] > 0 and edge_attr.shape[1] != 1536):
+        return None   # wrong embedding dimension — skip
+    # ─────────────────────────────────────────────────────────────────────────
+
     return Data(
         x=x,
         edge_index=edge_index,
