@@ -53,10 +53,17 @@ def main():
                     already_migrated += 1
                     continue
 
-                # Get answer node IDs
-                if hasattr(data, 'answer') and data.answer:
-                    answer_ids = data.answer if isinstance(data.answer, list) else [data.answer]
-                    answer_ids = [int(a) for a in answer_ids]
+                # Get answer node IDs — handle list, tensor, or string repr
+                if hasattr(data, 'answer') and data.answer is not None:
+                    ans = data.answer
+                    if isinstance(ans, str):
+                        import ast
+                        ans = ast.literal_eval(ans)
+                    if isinstance(ans, torch.Tensor):
+                        ans = ans.tolist()
+                    if not isinstance(ans, list):
+                        ans = [ans]
+                    answer_ids = [int(a) for a in ans]
                 else:
                     skipped += 1
                     continue
