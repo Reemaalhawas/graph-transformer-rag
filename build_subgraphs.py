@@ -245,6 +245,12 @@ def build_data(query: str, answer_ids: List[int], driver: Driver,
     if node_df.shape[0] == 0:
         return None
 
+    # Drop nodes with missing embeddings
+    node_df = node_df[node_df['textEmbedding'].apply(
+        lambda e: e is not None and len(e) > 0)].reset_index(drop=True)
+    if node_df.shape[0] == 0:
+        return None
+
     # 4. Embed edges
     rel_df = rel_df.copy()
     rel_df['textEmbedding'] = embed(rel_df['text'].tolist())
