@@ -476,7 +476,6 @@ class GRetriever(nn.Module):
             graph_emb  = self._encode_graph(x, edge_index, batch)
             text_emb   = self.llm.get_input_embeddings()(input_ids)
             inputs_emb = torch.cat([graph_emb, text_emb], dim=1)
-            input_len  = inputs_emb.size(1)
 
             graph_mask = torch.ones(graph_emb.size(0), 1, device=device,
                                     dtype=attn_mask.dtype)
@@ -489,12 +488,8 @@ class GRetriever(nn.Module):
                 pad_token_id=self.tokenizer.eos_token_id,
                 do_sample=False,
             )
-            # When using inputs_embeds, some Transformers versions return only
-            # new tokens; others return full sequence. Handle both cases:
-            if outputs.size(1) > self.config['max_new_tokens']:
-                gen_tokens = outputs[:, input_len:]
-            else:
-                gen_tokens = outputs
+            # With inputs_embeds, generate() returns only the new tokens
+            gen_tokens = outputs
 
         self.tokenizer.padding_side = orig_padding_side
         preds = self.tokenizer.batch_decode(gen_tokens, skip_special_tokens=True)

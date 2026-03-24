@@ -95,13 +95,35 @@ def get_subgraph_rels(node_ids: List, driver: Driver) -> pd.DataFrame:
     return pd.DataFrame([rec.data() for rec in res.records])
 
 
-def get_answer_names(answer_ids: List[int], driver: Driver) -> str:
-    """Look up entity names for answer node IDs — no OpenAI needed."""
-    res = driver.execute_query(
-        "UNWIND $ids AS nodeId MATCH (n:_Entity_ {nodeId: nodeId}) RETURN n.name AS name",
-        parameters_={"ids": answer_ids}
-    )
-    names = [r.data()['name'] for r in res.records if r.data().get('name')]
+def get_answer_names_from_skb(answer_ids: List[int], skb) -> str:
+    """Get entity names from STaRK SKB using answer_ids (STaRK entity indices).
+
+    IMPORTANT: STaRK answer_ids are indices into the SKB entity list,
+    NOT Neo4j nodeIds. Always use this function for label generation.
+    """
+    names = []
+    for aid in answer_ids:
+        name = None
+        # Try get_doc_info (most common stark_qa API)
+        try:
+            doc = skb.get_doc_info(aid, add_rel=False, compact=True)
+            first_line = str(doc).strip().split('\n')[0].strip()
+            if first_line:
+                name = first_line
+        except Exception:
+            pass
+        # Fallback: direct indexing
+        if not name:
+            try:
+                entity = skb[aid]
+                if isinstance(entity, dict):
+                    name = entity.get('name') or entity.get('title') or ''
+                else:
+                    name = str(entity).split('\n')[0].strip()
+            except Exception:
+                pass
+        if name:
+            names.append(name)
     return ' | '.join(names)
 
 
@@ -124,7 +146,8 @@ def get_node_df(node_ids: List, rel_df: pd.DataFrame, driver: Driver) -> pd.Data
 # Build one Data object
 # ---------------------------------------------------------------------------
 
-def build_data(query: str, answer_ids: List[int], driver: Driver, debug: bool = False) -> Data:
+def build_data(query: str, answer_ids: List[int], driver: Driver,
+               skb=None, debug: bool = False) -> Data:
     """Retrieve subgraph from Neo4j and build a PyG Data object."""
 
     # 1. Vector search → seed nodes
@@ -172,8 +195,10 @@ def build_data(query: str, answer_ids: List[int], driver: Driver, debug: bool = 
     edge_index = torch.tensor([src_idx, tgt_idx], dtype=torch.long)
     edge_attr = torch.tensor(np.array(edge_embs), dtype=torch.float)
 
-    # Label: entity names separated by ' | '
-    label = get_answer_names(answer_ids, driver)
+    # Label: entity names from STaRK SKB (not Neo4j — different ID spaces!)
+    if skb is None:
+        raise ValueError("skb (STaRK knowledge base) must be provided for label generation")
+    label = get_answer_names_from_skb(answer_ids, skb)
     if not label:
         return None
 
@@ -208,11 +233,14 @@ def main():
                         help='Skip questions whose .pt file already exists')
     args = parser.parse_args()
 
-    # Load STaRK-QA dataset
+    # Load STaRK-QA dataset and SKB
     print("Loading STaRK-QA Prime dataset...")
-    from stark_qa import load_qa
+    from stark_qa import load_qa, load_skb
     qa_dataset = load_qa('prime')
     df = qa_dataset.data
+
+    print("Loading STaRK SKB for label lookup...")
+    skb = load_skb('prime', download_processed=True)
 
     end = args.end if args.end else len(df)
     df = df.iloc[args.start:end].reset_index(drop=True)
@@ -236,7 +264,7 @@ def main():
                 query      = row['query']
                 answer_ids = list(row['answer_ids'])
 
-                data = build_data(query, answer_ids, driver)
+                data = build_data(query, answer_ids, driver, skb=skb)
 
                 if data is None:
                     print(f"  [{global_idx}] Skipped — empty subgraph")
