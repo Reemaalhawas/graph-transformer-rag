@@ -1,5 +1,7 @@
 """
 Build and save pre-computed subgraphs from Neo4j + OpenAI embeddings.
+Uses PCST (Prize-Collecting Steiner Tree) to prune subgraphs, following
+the NVIDIA G-Retriever reference implementation.
 Saves each Q&A pair as an individual .pt file ready for train.py.
 
 Usage:
@@ -14,7 +16,8 @@ import argparse
 import torch
 import numpy as np
 import pandas as pd
-from typing import List
+import pcst_fast
+from typing import List, Tuple
 from tqdm import tqdm
 from dotenv import load_dotenv
 from neo4j import GraphDatabase, Driver
@@ -59,8 +62,8 @@ def embed(doc_list: List[str]) -> List:
 # Neo4j helpers
 # ---------------------------------------------------------------------------
 
-def get_nodes_by_vector_search(prompt: str, driver: Driver, k: int = 4) -> List:
-    # Embed query in Python first (avoids needing genai plugin in Neo4j)
+def get_nodes_by_vector_search(prompt: str, driver: Driver, k: int = 5) -> Tuple[List, List]:
+    """Returns (node_ids, query_embedding)."""
     query_embedding = embedding_model.embed_query(prompt)
     res = driver.execute_query("""
         CALL db.index.vector.queryNodes($index, $k, $query_embedding) YIELD node
@@ -71,7 +74,8 @@ def get_nodes_by_vector_search(prompt: str, driver: Driver, k: int = 4) -> List:
             "k": k,
             "query_embedding": query_embedding,
         })
-    return [rec.data()['nodeId'] for rec in res.records]
+    node_ids = [rec.data()['nodeId'] for rec in res.records]
+    return node_ids, query_embedding
 
 
 def get_subgraph_rels(node_ids: List, driver: Driver) -> pd.DataFrame:
@@ -96,9 +100,84 @@ def get_subgraph_rels(node_ids: List, driver: Driver) -> pd.DataFrame:
     return pd.DataFrame([rec.data() for rec in res.records])
 
 
+def get_node_df(node_ids: List, rel_df: pd.DataFrame, driver: Driver) -> pd.DataFrame:
+    all_ids = set(node_ids)
+    if rel_df.shape[0] > 0:
+        all_ids.update(rel_df['src'].tolist())
+        all_ids.update(rel_df['tgt'].tolist())
+    res = driver.execute_query("""
+        UNWIND $nodeIds AS nodeId
+        MATCH(n:_Entity_ {nodeId:nodeId})
+        RETURN n.nodeId AS nodeId, n.name AS name,
+               n.textEmbedding AS textEmbedding, n.details AS details
+        """,
+        parameters_={"nodeIds": list(all_ids)})
+    return pd.DataFrame([rec.data() for rec in res.records])
+
+
+# ---------------------------------------------------------------------------
+# PCST pruning
+# ---------------------------------------------------------------------------
+
+def apply_pcst(node_df: pd.DataFrame, rel_df: pd.DataFrame,
+               query_embedding: List[float],
+               topk_node_ids: List) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Prune the candidate subgraph using Prize-Collecting Steiner Tree.
+
+    Node prizes  = cosine similarity between node embedding and query embedding.
+                   Seed nodes (from vector search) get a bonus prize of 1.0.
+    Edge costs   = uniform 1.0 per edge.
+    """
+    node_df = node_df.reset_index(drop=True)
+    id_to_idx = {row['nodeId']: i for i, row in node_df.iterrows()}
+
+    # Node prizes
+    node_embs = np.stack(node_df['textEmbedding'].tolist()).astype(np.float64)
+    q_emb = np.array(query_embedding, dtype=np.float64)
+    norms = np.linalg.norm(node_embs, axis=1)
+    q_norm = np.linalg.norm(q_emb)
+    cos_sim = (node_embs @ q_emb) / (norms * q_norm + 1e-8)
+    prizes = np.clip(cos_sim, 0, None)
+
+    # Bonus for seed nodes from vector search
+    for nid in topk_node_ids:
+        if nid in id_to_idx:
+            prizes[id_to_idx[nid]] += 1.0
+
+    # Build edge arrays (only edges where both endpoints are in node_df)
+    edges = []
+    rel_indices = []
+    for i, row in rel_df.iterrows():
+        s, t = row['src'], row['tgt']
+        if s in id_to_idx and t in id_to_idx:
+            edges.append([id_to_idx[s], id_to_idx[t]])
+            rel_indices.append(i)
+
+    if not edges:
+        return node_df, rel_df
+
+    edges_arr = np.array(edges, dtype=np.int64)
+    costs = np.ones(len(edges_arr), dtype=np.float64)
+
+    # Run PCST
+    selected_nodes, selected_edges = pcst_fast.pcst_fast(
+        edges_arr, prizes, costs, -1, 1, 'strong', 0
+    )
+
+    pruned_node_df = node_df.iloc[selected_nodes].reset_index(drop=True)
+    selected_rel_indices = [rel_indices[i] for i in selected_edges]
+    pruned_rel_df = rel_df.iloc[selected_rel_indices].reset_index(drop=True)
+
+    return pruned_node_df, pruned_rel_df
+
+
+# ---------------------------------------------------------------------------
+# STaRK SKB helpers
+# ---------------------------------------------------------------------------
+
 def get_entity_name_from_skb(skb, entity_id: int) -> str:
     """Get entity name from STaRK SKB by entity ID."""
-    # Method 1: node_attr_dict (direct lookup by entity ID)
     try:
         attrs = skb.node_attr_dict[entity_id]
         if isinstance(attrs, dict):
@@ -107,7 +186,6 @@ def get_entity_name_from_skb(skb, entity_id: int) -> str:
                 return str(name)
     except Exception:
         pass
-    # Method 2: node_info
     try:
         info = skb.node_info[entity_id]
         if isinstance(info, dict):
@@ -116,7 +194,6 @@ def get_entity_name_from_skb(skb, entity_id: int) -> str:
                 return str(name)
     except Exception:
         pass
-    # Method 3: get_doc_info by sequential index in candidate_ids
     try:
         cand_list = list(skb.candidate_ids)
         if entity_id in cand_list:
@@ -143,57 +220,44 @@ def get_answer_names_from_skb(answer_ids: List[int], skb) -> str:
     return ' | '.join(names)
 
 
-def get_node_df(node_ids: List, rel_df: pd.DataFrame, driver: Driver) -> pd.DataFrame:
-    all_ids = set(node_ids)
-    if rel_df.shape[0] > 0:
-        all_ids.update(rel_df['src'].tolist())
-        all_ids.update(rel_df['tgt'].tolist())
-    res = driver.execute_query("""
-        UNWIND $nodeIds AS nodeId
-        MATCH(n:_Entity_ {nodeId:nodeId})
-        RETURN n.nodeId AS nodeId, n.name AS name,
-               n.textEmbedding AS textEmbedding, n.details AS details
-        """,
-        parameters_={"nodeIds": list(all_ids)})
-    return pd.DataFrame([rec.data() for rec in res.records])
-
-
 # ---------------------------------------------------------------------------
 # Build one Data object
 # ---------------------------------------------------------------------------
 
 def build_data(query: str, answer_ids: List[int], driver: Driver,
                skb=None, debug: bool = False) -> Data:
-    """Retrieve subgraph from Neo4j and build a PyG Data object."""
+    """Retrieve subgraph from Neo4j, apply PCST, and build a PyG Data object."""
 
-    # 1. Vector search → seed nodes
-    init_node_ids = get_nodes_by_vector_search(query, driver)
+    # 1. Vector search → seed nodes + query embedding
+    init_node_ids, query_embedding = get_nodes_by_vector_search(query, driver)
     if debug:
         print(f"  DEBUG init_node_ids: {init_node_ids}")
 
-    # 2. Subgraph relations
+    # 2. Expand to 2-hop subgraph
     rel_df = get_subgraph_rels(init_node_ids, driver)
     if debug:
         print(f"  DEBUG rel_df shape: {rel_df.shape}")
     if rel_df.shape[0] == 0:
         return None
 
-    # 3. All nodes in subgraph
+    # 3. Fetch all nodes in candidate subgraph
     node_df = get_node_df(init_node_ids, rel_df, driver)
     if node_df.shape[0] == 0:
         return None
 
     # 4. Embed edges
+    rel_df = rel_df.copy()
     rel_df['textEmbedding'] = embed(rel_df['text'].tolist())
 
-    # 5. Re-index nodes for edge_index
+    # 5. Apply PCST pruning
+    node_df, rel_df = apply_pcst(node_df, rel_df, query_embedding, init_node_ids)
+    if node_df.shape[0] == 0 or rel_df.shape[0] == 0:
+        return None
+
+    # 6. Re-index nodes for edge_index
     node_df = node_df.reset_index(drop=True)
     id_to_idx = {row['nodeId']: i for i, row in node_df.iterrows()}
 
-    src_idx = [id_to_idx[s] for s in rel_df['src'] if s in id_to_idx]
-    tgt_idx = [id_to_idx[t] for t in rel_df['tgt'] if t in id_to_idx]
-
-    # Filter rel_df to only edges where both nodes are in node_df
     valid = [(s, t, e) for s, t, e in zip(
         rel_df['src'], rel_df['tgt'], rel_df['textEmbedding'])
         if s in id_to_idx and t in id_to_idx]
@@ -201,15 +265,15 @@ def build_data(query: str, answer_ids: List[int], driver: Driver,
     if not valid:
         return None
 
-    src_idx = [id_to_idx[s] for s, t, e in valid]
-    tgt_idx = [id_to_idx[t] for s, t, e in valid]
+    src_idx  = [id_to_idx[s] for s, t, e in valid]
+    tgt_idx  = [id_to_idx[t] for s, t, e in valid]
     edge_embs = [e for s, t, e in valid]
 
-    # 6. Tensors
+    # 7. Tensors
     x = torch.tensor(
         np.stack(node_df['textEmbedding'].tolist()), dtype=torch.float)
     edge_index = torch.tensor([src_idx, tgt_idx], dtype=torch.long)
-    edge_attr = torch.tensor(np.array(edge_embs), dtype=torch.float)
+    edge_attr  = torch.tensor(np.array(edge_embs), dtype=torch.float)
 
     # Label: entity names from STaRK SKB (not Neo4j — different ID spaces!)
     if skb is None:
@@ -278,7 +342,6 @@ def main():
 
             try:
                 query = row['query']
-                # answer_ids may be stored as a string like "[95886]" in pandas
                 raw_ids = row['answer_ids']
                 if isinstance(raw_ids, str):
                     answer_ids = [int(x) for x in ast.literal_eval(raw_ids)]
