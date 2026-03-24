@@ -444,6 +444,10 @@ class GRetriever(nn.Module):
         device = next(iter(self.llm.parameters())).device
         desc   = desc or [''] * len(questions)
 
+        # Use left-padding for inference so real tokens are at the right
+        orig_padding_side = self.tokenizer.padding_side
+        self.tokenizer.padding_side = 'left'
+
         include_desc = (mode in ('baseline', 'pipeline'))
         prompts      = self._build_prompts(questions, desc, include_desc)
         enc          = self._tokenize(prompts)
@@ -472,6 +476,7 @@ class GRetriever(nn.Module):
             graph_emb  = self._encode_graph(x, edge_index, batch)
             text_emb   = self.llm.get_input_embeddings()(input_ids)
             inputs_emb = torch.cat([graph_emb, text_emb], dim=1)
+            input_len  = inputs_emb.size(1)
 
             graph_mask = torch.ones(graph_emb.size(0), 1, device=device,
                                     dtype=attn_mask.dtype)
@@ -484,8 +489,14 @@ class GRetriever(nn.Module):
                 pad_token_id=self.tokenizer.eos_token_id,
                 do_sample=False,
             )
-            gen_tokens = outputs  # generate with inputs_embeds returns only new tokens
+            # When using inputs_embeds, some Transformers versions return only
+            # new tokens; others return full sequence. Handle both cases:
+            if outputs.size(1) > self.config['max_new_tokens']:
+                gen_tokens = outputs[:, input_len:]
+            else:
+                gen_tokens = outputs
 
+        self.tokenizer.padding_side = orig_padding_side
         preds = self.tokenizer.batch_decode(gen_tokens, skip_special_tokens=True)
         return [p.strip() for p in preds]
 
@@ -680,10 +691,11 @@ def train_epoch(model, loader, optimizer, epoch, config):
 
 
 @torch.no_grad()
-def evaluate_loader(model, loader, config, mode='g_retriever'):
+def evaluate_loader(model, loader, config, mode='g_retriever', print_n=3):
     model.eval()
     all_preds = []
     all_gts   = []
+    printed   = 0
 
     for batch in tqdm(loader, desc=f"Eval [{mode}]"):
         preds = model.inference(
@@ -697,6 +709,16 @@ def evaluate_loader(model, loader, config, mode='g_retriever'):
         )
         all_preds.extend(preds)
         all_gts.extend(batch.label)
+
+        # Print first few predictions for debugging
+        if printed < print_n:
+            for p, l, q in zip(preds, batch.label, batch.question):
+                if printed >= print_n:
+                    break
+                print(f"\n  [DEBUG {mode}] Q: {q[:80]}")
+                print(f"  [DEBUG {mode}] Pred:  {repr(p[:120])}")
+                print(f"  [DEBUG {mode}] Label: {repr(l[:120])}")
+                printed += 1
 
     return compute_metrics(all_preds, all_gts), all_preds, all_gts
 
