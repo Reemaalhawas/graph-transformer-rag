@@ -114,14 +114,18 @@ def get_node_df(node_ids: List, rel_df: pd.DataFrame, driver: Driver) -> pd.Data
 # Build one Data object
 # ---------------------------------------------------------------------------
 
-def build_data(query: str, answer_ids: List[int], driver: Driver) -> Data:
+def build_data(query: str, answer_ids: List[int], driver: Driver, debug: bool = False) -> Data:
     """Retrieve subgraph from Neo4j and build a PyG Data object."""
 
     # 1. Vector search → seed nodes
     init_node_ids = get_nodes_by_vector_search(query, driver)
+    if debug:
+        print(f"  DEBUG init_node_ids: {init_node_ids}")
 
     # 2. Subgraph relations
     rel_df = get_subgraph_rels(init_node_ids, driver)
+    if debug:
+        print(f"  DEBUG rel_df shape: {rel_df.shape}")
     if rel_df.shape[0] == 0:
         return None
 
