@@ -550,14 +550,17 @@ class GRetriever(nn.Module):
             nn.Linear(llm_hidden, llm_hidden),
         )
 
-        # Move projection to same device as LLM
+        # Move projection and GNN to same device as LLM
         self.graph_proj = self.graph_proj.to(self.llm.device)
+        self.gnn = self.gnn.to(self.llm.device)
 
     def encode_graph(self, x, edge_index, batch):
         """Encode graph and project to LLM space."""
-        graph_emb = self.gnn(x, edge_index, batch)   # [batch_size, gnn_out]
-        graph_emb = self.graph_proj(graph_emb)         # [batch_size, llm_hidden]
-        return graph_emb.unsqueeze(1)                  # [batch_size, 1, llm_hidden]
+        graph_emb = self.gnn(x, edge_index, batch)          # [batch_size, gnn_out]
+        graph_emb = self.graph_proj(graph_emb.float())       # float32 through proj
+        # Cast to match LLM embedding dtype (bfloat16 with 4-bit quant)
+        target_dtype = self.llm.get_input_embeddings().weight.dtype
+        return graph_emb.unsqueeze(1).to(target_dtype)       # [batch_size, 1, llm_hidden]
 
     def forward(self, x, edge_index, batch, input_ids, attention_mask, labels=None):
         device = self.llm.device
