@@ -27,10 +27,16 @@ def parse_answer_ids(answer):
     """Robustly convert any answer format to a flat list of integer node IDs."""
     if answer is None:
         return []
-    # String: "[15450, 23491]" or "15450"
+    # String: "[15450, 23491]", "15450", or malformed "[15450, 23491"
     if isinstance(answer, str):
-        parsed = ast.literal_eval(answer.strip())
-        return parse_answer_ids(parsed)
+        try:
+            parsed = ast.literal_eval(answer.strip())
+            return parse_answer_ids(parsed)
+        except (ValueError, SyntaxError):
+            # Fallback: extract all integers via regex
+            import re
+            nums = re.findall(r'\d+', answer)
+            return [int(n) for n in nums] if nums else []
     # Torch tensor
     if isinstance(answer, torch.Tensor):
         return parse_answer_ids(answer.tolist())
