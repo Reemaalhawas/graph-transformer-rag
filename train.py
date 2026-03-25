@@ -76,31 +76,24 @@ DEFAULT_CONFIG = {
 # =============================================================================
 
 class SubgraphDataset(torch.utils.data.Dataset):
-    """Loads pre-computed .pt subgraph files using STaRK official train/val/test splits."""
+    """Loads pre-computed .pt subgraph files with deterministic 80/10/10 split."""
 
     def __init__(self, data_dir: str, split: str = 'all'):
         self.data_dir = data_dir
-        all_files = set(os.listdir(data_dir))
+        files = sorted([f for f in os.listdir(data_dir) if f.endswith('.pt')])
 
-        if split == 'all':
-            self.files = sorted([f for f in all_files if f.endswith('.pt')])
+        n = len(files)
+        train_end = int(0.8 * n)
+        val_end   = int(0.9 * n)
+
+        if split == 'train':
+            self.files = files[:train_end]
+        elif split == 'val':
+            self.files = files[train_end:val_end]
+        elif split == 'test':
+            self.files = files[val_end:]
         else:
-            # Use STaRK official splits — same as NVIDIA reference
-            from stark_qa import load_qa
-            qa_dataset = load_qa('prime')
-            df = qa_dataset.data
-            # Method 1: split column exists in the dataframe
-            if 'split' in df.columns:
-                indices = df[df['split'] == split].index.tolist()
-            else:
-                # Method 2: get_subset preserves original DataFrame index
-                subset = qa_dataset.get_subset(split)
-                indices = list(subset.data.index)
-            self.files = sorted([
-                f"subgraph_{idx:05d}.pt"
-                for idx in indices
-                if f"subgraph_{idx:05d}.pt" in all_files
-            ])
+            self.files = files
 
         print(f"[{split}] {len(self.files)} subgraphs")
 
