@@ -591,12 +591,16 @@ def print_metrics(metrics: dict, prefix: str = ''):
 
 def print_results_table(results: dict):
     order = [
-        "Pipeline",
-        f"G-Retriever (GAT)",
-        f"G-Retriever (Transformer)",
-        f"G-Retriever (GCN)",
-        "Subgraph Pruning",
         "Baseline (LLM only)",
+        "G-Retriever (GAT)",
+        "G-Retriever (Transformer)",
+        "G-Retriever (GCN)",
+        "Pipeline (GAT)",
+        "Pipeline (Transformer)",
+        "Pipeline (GCN)",
+        "Subgraph Pruning (GAT)",
+        "Subgraph Pruning (Transformer)",
+        "Subgraph Pruning (GCN)",
     ]
     W = 26
     print("\n" + "=" * 78)
@@ -720,11 +724,12 @@ def evaluate_loader(model, loader, config, mode='g_retriever', print_n=3):
 def evaluate_all_modes(model, loader, config, encoder_type):
     """Run all 4 modes and return results dict keyed by display name."""
     _display = {'gat': 'GAT', 'transformer': 'Transformer', 'gcn': 'GCN'}
+    enc = _display.get(encoder_type, encoder_type.upper())
     modes = {
         'baseline':         'Baseline (LLM only)',
-        'subgraph_pruning': 'Subgraph Pruning',
-        'g_retriever':      f'G-Retriever ({_display.get(encoder_type, encoder_type.upper())})',
-        'pipeline':         'Pipeline',
+        'subgraph_pruning': f'Subgraph Pruning ({enc})',
+        'g_retriever':      f'G-Retriever ({enc})',
+        'pipeline':         f'Pipeline ({enc})',
     }
     results = {}
     for mode, label in modes.items():
@@ -811,7 +816,10 @@ def main():
                 with open(rpath) as f:
                     saved = json.load(f)
                 _d = {'gat': 'GAT', 'transformer': 'Transformer', 'gcn': 'GCN'}
-                label = f'G-Retriever ({_d.get(enc, enc.upper())})'
+                _e = _d.get(enc, enc.upper())
+                for key in [f'G-Retriever ({_e})', f'Pipeline ({_e})', f'Subgraph Pruning ({_e})']:
+                    if key in saved.get('test_metrics', {}):
+                        all_results[key] = saved['test_metrics'][key]
                 if saved.get('test_metrics'):
                     all_results[label] = saved['test_metrics']
         print_results_table(all_results)
@@ -885,15 +893,16 @@ def main():
         if os.path.exists(rpath):
             with open(rpath) as f:
                 saved = json.load(f)
-            label = f'G-Retriever ({enc.upper()})'
-            if saved.get('test_metrics'):
-                all_results[label] = saved['test_metrics']
-                print(f"Loaded saved results for {label}")
+            if saved.get('all_results'):
+                for k, v in saved['all_results'].items():
+                    all_results[k] = v
+                    print(f"Loaded saved results for {k}")
 
     print_results_table(all_results)
 
     # Save
-    test_metrics = all_results.get(f'G-Retriever ({args.encoder.upper()})', {})
+    _d = {'gat': 'GAT', 'transformer': 'Transformer', 'gcn': 'GCN'}
+    test_metrics = all_results.get(f'G-Retriever ({_d.get(args.encoder, args.encoder.upper())})', {})
     with open(os.path.join(output_dir, 'results.json'), 'w') as f:
         json.dump({
             'encoder':      args.encoder,
