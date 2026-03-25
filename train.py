@@ -88,11 +88,13 @@ class SubgraphDataset(torch.utils.data.Dataset):
             # Use STaRK official splits — same as NVIDIA reference
             from stark_qa import load_qa
             qa_dataset = load_qa('prime')
-            subset = qa_dataset.get_subset(split)
-            # subset.indices gives the global question indices for this split
-            indices = getattr(subset, 'indices', None)
-            if indices is None:
-                # fallback: use the index column of the subset dataframe
+            df = qa_dataset.data
+            # Method 1: split column exists in the dataframe
+            if 'split' in df.columns:
+                indices = df[df['split'] == split].index.tolist()
+            else:
+                # Method 2: get_subset preserves original DataFrame index
+                subset = qa_dataset.get_subset(split)
                 indices = list(subset.data.index)
             self.files = sorted([
                 f"subgraph_{idx:05d}.pt"
@@ -724,10 +726,11 @@ def evaluate_loader(model, loader, config, mode='g_retriever', print_n=3):
 
 def evaluate_all_modes(model, loader, config, encoder_type):
     """Run all 4 modes and return results dict keyed by display name."""
+    _display = {'gat': 'GAT', 'transformer': 'Transformer', 'gcn': 'GCN'}
     modes = {
         'baseline':         'Baseline (LLM only)',
         'subgraph_pruning': 'Subgraph Pruning',
-        'g_retriever':      f'G-Retriever ({encoder_type.upper()})',
+        'g_retriever':      f'G-Retriever ({_display.get(encoder_type, encoder_type.upper())})',
         'pipeline':         'Pipeline',
     }
     results = {}
@@ -814,7 +817,8 @@ def main():
             if os.path.exists(rpath):
                 with open(rpath) as f:
                     saved = json.load(f)
-                label = f'G-Retriever ({enc.upper()})'
+                _d = {'gat': 'GAT', 'transformer': 'Transformer', 'gcn': 'GCN'}
+                label = f'G-Retriever ({_d.get(enc, enc.upper())})'
                 if saved.get('test_metrics'):
                     all_results[label] = saved['test_metrics']
         print_results_table(all_results)
