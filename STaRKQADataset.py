@@ -28,11 +28,13 @@ class STaRKQADataset(InMemoryDataset):
         algo_config_version: int,
         split: str = "train",
         force_reload: bool = False,
+        pipeline_mode: bool = False,
     ) -> None:
         self.split = split
         self.raw_dataset = raw_dataset
         self.retrieval_config_version = retrieval_config_version
         self.algo_config_version = algo_config_version
+        self.pipeline_mode = pipeline_mode
 
         # Paths adjusted for this repo: embeddings live in emb/ not data-loading/emb/
         base_emb = os.path.join(os.path.dirname(__file__), 'emb/prime/text-embedding-ada-002')
@@ -204,6 +206,27 @@ class STaRKQADataset(InMemoryDataset):
             nodes_desc = textual_nodes_df.drop(['name', 'description', 'textEmbedding'], axis=1).to_csv(index=False)
             edges_desc = textual_edges_df.to_csv(index=False)
             desc = nodes_desc + '\n' + edges_desc
+
+            # Pipeline mode: also include base-subgraph nodes NOT selected by PCST
+            # so the LLM sees a richer context while the GNN still uses the pruned graph.
+            if self.pipeline_mode:
+                pcst_set = set(pcst_nodes_original_ids)
+                all_base = np.unique(np.concatenate([
+                    subgraph_rels['src'].values,
+                    subgraph_rels['tgt'].values,
+                ]))
+                extra_ids = [int(n) for n in all_base if n not in pcst_set]
+                if extra_ids:
+                    with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
+                        extra_df = self.get_textual_nodes(extra_ids, driver)
+                    if not extra_df.empty:
+                        extra_df['node_attr'] = extra_df.apply(
+                            lambda row: f"name: {row['name']}, description: {row['description']}", axis=1)
+                        extra_df.rename(columns={'nodeId': 'node_id'}, inplace=True)
+                        extra_desc = extra_df.drop(
+                            ['name', 'description', 'textEmbedding'], axis=1
+                        ).to_csv(index=False)
+                        desc = desc + '\nAdditional context nodes:\n' + extra_desc
 
             enriched_data = Data(
                 x=node_embedding,

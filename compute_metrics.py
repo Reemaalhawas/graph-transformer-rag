@@ -140,3 +140,16 @@ def compute_metrics(eval_output, skip_invalid_hit=True):
     print(f'Recall@20:       {recall_at_20:.4f}')
     print(f'MRR:             {mrr:.4f}')
     print(f'Num predictions: {num_preds:.2f}')
+
+    return {
+        'f1':            float(f1),
+        'precision':     float(precision),
+        'recall':        float(recall),
+        'substr_hit1':   float(hit),
+        'exact_hit1':    float(exact_hit_at_1),
+        'exact_hit5':    float(exact_hit_at_5),
+        'hit_any':       float(exact_hit_at_any),
+        'recall_at_20':  float(recall_at_20),
+        'mrr':           float(mrr),
+        'num_preds':     float(num_preds),
+    }
