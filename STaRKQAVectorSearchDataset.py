@@ -56,7 +56,10 @@ class STaRKQAVectorSearchDataset(InMemoryDataset):
             with GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USERNAME, NEO4J_PASSWORD)) as driver:
                 textual_nodes_df = self.get_textual_nodes(topk_node_ids, driver)
 
-                textual_nodes_df.description.fillna("")
+                if 'description' not in textual_nodes_df.columns:
+                    textual_nodes_df['description'] = ''
+                else:
+                    textual_nodes_df['description'] = textual_nodes_df['description'].fillna('')
                 textual_nodes_df['node_attr'] = textual_nodes_df.apply(
                     lambda row: f"name: {row['name']}, description: {row['description']}", axis=1)
                 textual_nodes_df.rename(columns={'nodeId': 'node_id'}, inplace=True)

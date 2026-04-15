@@ -200,7 +200,10 @@ class STaRKQADataset(InMemoryDataset):
             textual_nodes_df = textual_nodes_df.sort_values(by=['vector_similarity'], ascending=False)
             pcst_nodes[index] = textual_nodes_df['nodeId'].tolist()
 
-            textual_nodes_df.description.fillna("")
+            if 'description' not in textual_nodes_df.columns:
+                textual_nodes_df['description'] = ''
+            else:
+                textual_nodes_df['description'] = textual_nodes_df['description'].fillna('')
             textual_nodes_df['node_attr'] = textual_nodes_df.apply(lambda row: f"name: {row['name']}, description: {row['description']}", axis=1)
             textual_nodes_df.rename(columns={'nodeId': 'node_id'}, inplace=True)
             nodes_desc = textual_nodes_df.drop(['name', 'description', 'textEmbedding'], axis=1).to_csv(index=False)
