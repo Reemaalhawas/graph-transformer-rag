@@ -22,6 +22,9 @@ pip install accelerate==0.29.3
 pip install peft==0.10.0
 pip install bitsandbytes==0.43.1
 
+# pytdc has a broken setup.py — must install with --no-build-isolation first
+pip install pytdc --no-build-isolation
+
 # Everything else
 pip install -r requirements.txt
 
