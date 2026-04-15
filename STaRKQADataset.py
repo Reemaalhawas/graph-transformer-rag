@@ -227,7 +227,7 @@ class STaRKQADataset(InMemoryDataset):
         RETURN node.nodeId AS nodeId
         """,
                                    parameters_={
-                                       "index": "text_embeddings",
+                                       "index": "textembeddings",
                                        "k": k_nodes,
                                        "query_embedding": query_embedding})
         return [rec.data()['nodeId'] for rec in res.records]
