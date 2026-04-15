@@ -12,7 +12,7 @@ peft==0.10.0
 bitsandbytes==0.43.1
 
 # Neo4j
-neo4j==5.18.0
+neo4j==5.24.0
 graphdatascience==1.8
 
 # Embeddings and data
