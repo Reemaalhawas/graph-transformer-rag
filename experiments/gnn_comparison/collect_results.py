@@ -2,7 +2,7 @@
 import json, os
 import pandas as pd
 
-BASE = "/home/ubuntu/stark-graphrag-storage/qa_results"
+BASE = "/home/ubuntu/GraphRAG/qa_results"
 rows = []
 for f in os.listdir(BASE):
     if f.endswith("_results.json"):

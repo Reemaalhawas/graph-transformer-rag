@@ -12,7 +12,7 @@ python verify_env.py
 # Verify subgraphs are enriched before starting
 python3 -c "
 import torch, os
-FS = '/home/ubuntu/stark-graphrag-storage'
+FS = '/home/ubuntu/GraphRAG'
 for split in ['train', 'val', 'test']:
     for suffix in ['_enriched', '']:
         path = f'{FS}/stark_{split}_subgraphs{suffix}.pt'
@@ -51,4 +51,4 @@ python main.py \
   --max_txt_len 4096
 
 echo "All QA experiments complete."
-echo "Results: /home/ubuntu/stark-graphrag-storage/qa_results/"
+echo "Results: /home/ubuntu/GraphRAG/qa_results/"

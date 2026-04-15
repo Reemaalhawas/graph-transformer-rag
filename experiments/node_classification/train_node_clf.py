@@ -19,9 +19,9 @@ sys.path.append(os.path.join(os.path.dirname(__file__), "../.."))
 from models.gnn_variants import GCN, GraphTransformer
 
 DEVICE  = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-DATA    = "/home/ubuntu/stark-graphrag-storage/node_clf_data.pt"
-CKPTS   = "/home/ubuntu/stark-graphrag-storage/node_clf_checkpoints"
-RESULTS = "/home/ubuntu/stark-graphrag-storage/node_clf_results"
+DATA    = "/home/ubuntu/GraphRAG/node_clf_data.pt"
+CKPTS   = "/home/ubuntu/GraphRAG/node_clf_checkpoints"
+RESULTS = "/home/ubuntu/GraphRAG/node_clf_results"
 N_CLS   = 7
 
 

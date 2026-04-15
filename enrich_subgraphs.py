@@ -20,7 +20,7 @@ PASS = os.getenv("NEO4J_PASSWORD")
 assert URI,  "NEO4J_URI not set in .env"
 assert PASS, "NEO4J_PASSWORD not set in .env"
 
-FS = "/home/ubuntu/stark-graphrag-storage"
+FS = "/home/ubuntu/GraphRAG"
 SPLITS = {
     "train": f"{FS}/stark_train_subgraphs.pt",
     "val":   f"{FS}/stark_val_subgraphs.pt",

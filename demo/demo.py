@@ -17,7 +17,7 @@ load_dotenv()
 URI  = os.getenv("NEO4J_URI")
 USER = os.getenv("NEO4J_USER", "neo4j")
 PASS = os.getenv("NEO4J_PASSWORD")
-FS   = "/home/ubuntu/stark-graphrag-storage"
+FS   = "/home/ubuntu/GraphRAG"
 
 DEMO_QUESTIONS = [
     "What drugs target the CYP3A4 enzyme and treat strongyloidiasis?",

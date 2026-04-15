@@ -15,7 +15,7 @@ load_dotenv()
 URI  = os.getenv("NEO4J_URI")
 USER = os.getenv("NEO4J_USER", "neo4j")
 PASS = os.getenv("NEO4J_PASSWORD")
-SAVE = "/home/ubuntu/stark-graphrag-storage/node_clf_data.pt"
+SAVE = "/home/ubuntu/GraphRAG/node_clf_data.pt"
 
 TYPE_TO_IDX = {
     "Drug": 0,
