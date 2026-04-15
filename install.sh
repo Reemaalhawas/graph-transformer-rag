@@ -2,15 +2,15 @@
 set -e
 echo "=== Installing GraphRAG environment ==="
 
-# Create conda environment
-conda create -n graphrag python=3.10 -y
-source activate graphrag || conda activate graphrag
+# Check Python and CUDA
+python3 --version
+nvidia-smi | head -3
 
-# PyTorch with CUDA 12.1 — never use conda for this
+# PyTorch with CUDA 12.1
 pip install torch==2.1.2 torchvision==0.16.2 \
     --index-url https://download.pytorch.org/whl/cu121
 
-# PyG core + C++ extensions — MUST use this exact URL
+# PyG core + C++ extensions
 pip install torch_geometric==2.6.0
 pip install pyg_lib torch_scatter torch_sparse \
     torch_cluster torch_spline_conv \
@@ -25,4 +25,4 @@ pip install bitsandbytes==0.43.1
 # Everything else
 pip install -r requirements.txt
 
-echo "=== Installation complete. Run: python verify_env.py ==="
+echo "=== Installation complete. Run: python3 verify_env.py ==="
