@@ -79,6 +79,8 @@ def inference_step(model, batch, model_save_name):
         return model.inference(batch.question, batch.x, batch.edge_index,
                                batch.batch, batch.edge_attr, batch.desc)
 
+FS_CKPT = "/home/ubuntu/GraphRAG/checkpoints"
+
 def save_params_dict(model, save_path):
     state_dict = model.state_dict()
     param_grad_dict = {
@@ -88,7 +90,13 @@ def save_params_dict(model, save_path):
     for k in list(state_dict.keys()):
         if k in param_grad_dict.keys() and not param_grad_dict[k]:
             del state_dict[k]
+    # Save to local path
     torch.save(state_dict, save_path)
+    # Also save to persistent filesystem
+    os.makedirs(FS_CKPT, exist_ok=True)
+    fs_path = os.path.join(FS_CKPT, os.path.basename(save_path))
+    torch.save(state_dict, fs_path)
+    print(f"Checkpoint also saved to filesystem: {fs_path}")
 
 def load_params_dict(model, save_path):
     state_dict = model.state_dict()
