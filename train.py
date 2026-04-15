@@ -20,15 +20,24 @@ from compute_metrics import compute_metrics
 from STaRKQADataset import STaRKQADataset
 from STaRKQAVectorSearchDataset import STaRKQAVectorSearchDataset
 
+from torch_geometric.nn import GAT
 from src.models import build_gcn, GraphTransformerEncoder, CombinedEncoder
 
 
 def build_gnn(encoder: str, in_channels: int, hidden_channels: int, out_channels: int, num_layers: int, heads: int) -> torch.nn.Module:
     """
     Return the requested GNN encoder.
-    All three are drop-in replacements for GAT inside GRetriever.
+    All four are drop-in replacements inside GRetriever.
     """
-    if encoder == 'gcn':
+    if encoder == 'gat':
+        return GAT(
+            in_channels=in_channels,
+            hidden_channels=hidden_channels,
+            out_channels=out_channels,
+            num_layers=num_layers,
+            heads=heads,
+        )
+    elif encoder == 'gcn':
         return build_gcn(
             in_channels=in_channels,
             hidden_channels=hidden_channels,
@@ -52,7 +61,7 @@ def build_gnn(encoder: str, in_channels: int, hidden_channels: int, out_channels
             heads=heads,
         )
     else:
-        raise ValueError(f"Unknown encoder '{encoder}'. Choose from: gcn, graph_transformer, combined")
+        raise ValueError(f"Unknown encoder '{encoder}'. Choose from: gat, gcn, graph_transformer, combined")
 
 
 def get_loss(model, batch, model_save_name) -> Tensor:
@@ -295,8 +304,8 @@ def train(
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--encoder', type=str, default='combined',
-                        choices=['gcn', 'graph_transformer', 'combined'],
+    parser.add_argument('--encoder', type=str, default='gat',
+                        choices=['gat', 'gcn', 'graph_transformer', 'combined'],
                         help='GNN encoder to use (replaces GAT from original repo)')
     parser.add_argument('--gnn_hidden_channels', type=int, default=1536)
     parser.add_argument('--num_gnn_layers', type=int, default=4)
