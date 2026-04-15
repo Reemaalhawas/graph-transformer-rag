@@ -13,6 +13,7 @@
 # =============================================================================
 set -e
 cd /home/ubuntu/graph-transformer-rag
+source .venv/bin/activate
 
 LLM="llama3.1-8b"
 EPOCHS=3
