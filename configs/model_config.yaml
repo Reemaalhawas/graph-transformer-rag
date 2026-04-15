@@ -1,0 +1,49 @@
+# Graph Transformer + GCN Model Configuration
+
+model:
+  node_feat_dim: 768          # PubMedBERT embedding dimension
+  query_feat_dim: 1536        # Ada-002 query embedding dimension
+  hidden_dim: 256             # Hidden layer dimension
+  output_dim: 256             # Final node embedding dimension
+  num_gcn_layers: 2           # Number of GCN layers
+  num_transformer_layers: 2   # Number of Graph Transformer layers
+  num_heads: 8                # Attention heads in Graph Transformer
+  dropout: 0.1                # Dropout rate
+  edge_dim: 64                # Edge feature dimension (for typed edges)
+
+training:
+  lr: 1.0e-4                  # Learning rate
+  weight_decay: 1.0e-5
+  epochs: 50
+  batch_size: 32              # Number of queries per batch
+  num_neg_samples: 64         # Negative samples per positive pair
+  grad_clip: 1.0
+  scheduler: cosine           # cosine | step | none
+  warmup_steps: 100
+  eval_every: 5               # Evaluate every N epochs
+  save_best: true
+  checkpoint_dir: checkpoints/
+
+data:
+  data_root: data/prime
+  emb_root: emb/prime
+  emb_model: text-embedding-ada-002
+  node_emb_file: processed/node_embeddings_pubmedbert.pt
+  node_ids_file: processed/node_ids_pubmedbert.pt
+  max_nodes_per_subgraph: 100
+
+retrieval:
+  top_k: 10                   # Final answer nodes to return
+  pcst_prize: 1.0             # Node prize for PCST
+  pcst_num_clusters: 1        # PCST clusters
+  vector_top_k: 50            # Candidate nodes from vector search
+
+neo4j:
+  uri: bolt://localhost:7687
+  username: neo4j
+  password: ""                 # Set via NEO4J_PASSWORD env var
+
+llm:
+  model: gpt-4o-mini
+  temperature: 0.0
+  max_tokens: 512

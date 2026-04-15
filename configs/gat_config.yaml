@@ -1,0 +1,11 @@
+gnn_type: gat
+num_epochs: 3
+hidden_channels: 1024
+num_gnn_layers: 4
+batch_size: 4
+eval_batch_size: 4
+lr: 0.00001
+max_txt_len: 4096
+llama_version: llama3.1-8b
+freeze_llm: false
+checkpointing: true

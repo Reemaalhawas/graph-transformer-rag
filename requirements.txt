@@ -1,0 +1,34 @@
+# PyTorch — must match CUDA 12.1 (installed via install.sh, not pip directly)
+torch==2.1.2
+torchvision==0.16.2
+
+# PyG — must be exactly 2.6.0 for GRetriever to work
+torch_geometric==2.6.0
+
+# LLM stack — install in this exact order (handled by install.sh)
+transformers==4.40.0
+accelerate==0.29.3
+peft==0.10.0
+bitsandbytes==0.43.1
+
+# Neo4j
+neo4j==5.18.0
+graphdatascience==1.8
+
+# Embeddings and data
+sentence-transformers==2.6.1
+openai==1.23.2
+stark-qa
+pcst_fast==1.0.10
+sentencepiece==0.2.0
+langchain-openai==0.2.0
+
+# Utilities
+python-dotenv==1.0.1
+pandas==2.2.1
+numpy==1.26.4
+tqdm==4.66.2
+pyyaml==6.0.1
+scikit-learn==1.4.2
+matplotlib==3.8.4
+protobuf==5.28.2
